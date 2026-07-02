@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+data/rag_storage/
+data/settings.json
+uploads/
+*.log
+.DS_Store
+.idea/
+.vscode/
