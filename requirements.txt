@@ -1,0 +1,13 @@
+-e vendor/LightRAG
+openai>=2.0.0,<3.0.0
+fastapi>=0.108
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+python-dotenv>=1.0
+pypdf>=4.0
+aiofiles>=23.0
+python-docx>=0.8.11,<2.0.0
+python-pptx>=0.6.21,<2.0.0
+openpyxl>=3.0.0,<4.0.0
+markitdown[pdf,docx,pptx,xlsx,xls]>=0.1.0
+docling>=2.0.0

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#eef6fc" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>NiCo AI — робот-помощник</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true">
+    <span class="orb orb-a"></span>
+    <span class="orb orb-b"></span>
+    <span class="orb orb-c"></span>
+  </div>
+
+  <div class="app">
+    <header class="header glass">
+      <div class="header-start">
+        <div class="brand">
+          <div class="brand-mark glass-shine" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 38C8 24 14 12 24 8C34 12 40 24 40 38" stroke="#0084C7" stroke-width="6" stroke-linecap="round"/>
+              <path d="M8 10C18 18 30 18 40 10" stroke="#005A9C" stroke-width="6" stroke-linecap="round"/>
+              <path d="M14 38L34 10" stroke="#005A9C" stroke-width="4" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <h1 class="brand-title">NiCo AI</h1>
+          </div>
+        </div>
+        <button
+          id="statsToggle"
+          class="stats-chip glass-badge"
+          type="button"
+          aria-expanded="false"
+          aria-controls="statsPanel"
+        >
+          <span class="stats-chip-label">Меню</span>
+          <strong id="menuCountMobile">—</strong>
+        </button>
+      </div>
+
+      <div class="header-actions">
+        <button id="uploadBtn" class="btn btn-primary" type="button" aria-busy="false">
+          <span class="btn-spinner" aria-hidden="true" hidden></span>
+          <span class="btn-text-full">Загрузить документы</span>
+          <span class="btn-text-short">Загрузить</span>
+        </button>
+        <input
+          id="fileInput"
+          type="file"
+          hidden
+          accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.rtf,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.epub"
+          multiple
+        />
+        <span id="statusBadge" class="badge glass-badge" role="status">Подключение...</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside id="statsPanel" class="sidebar">
+        <section class="panel glass panel-history">
+          <div class="panel-head">
+            <h2>История чатов</h2>
+            <button id="newChatBtn" class="btn btn-ghost btn-sm" type="button">+ Новый</button>
+          </div>
+          <ul id="chatSessionList" class="chat-session-list" role="list"></ul>
+        </section>
+        <section class="panel glass panel-knowledge">
+          <h2>База знаний</h2>
+          <div class="knowledge-body">
+            <div class="knowledge-summary">
+              <div class="stat-card glass-inset">
+                <span class="stat-label">Документов</span>
+                <strong id="documentCount">—</strong>
+              </div>
+              <div class="stat-card glass-inset">
+                <span class="stat-label">Сущностей в графе</span>
+                <strong id="entityCount">—</strong>
+              </div>
+            </div>
+            <div class="documents-block">
+              <p class="documents-caption">Загруженные файлы</p>
+              <ul id="documentList" class="document-list" role="list"></ul>
+            </div>
+            <p id="labelsPreview" class="labels-preview"></p>
+          </div>
+        </section>
+      </aside>
+
+      <section class="chat glass">
+        <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+
+        <form id="chatForm" class="composer glass-composer">
+          <textarea
+            id="chatInput"
+            rows="1"
+            placeholder="Задайте вопрос по загруженным документам..."
+            enterkeyhint="send"
+            autocomplete="off"
+            required
+          ></textarea>
+          <button class="btn btn-primary btn-send" type="submit" aria-label="Отправить сообщение">
+            <span class="btn-text-full">Отправить</span>
+            <span class="btn-text-short" aria-hidden="true">→</span>
+          </button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
+  <div id="uploadProgress" class="upload-progress glass" role="status" aria-live="polite" hidden>
+    <span class="upload-progress-spinner" aria-hidden="true"></span>
+    <span id="uploadProgressText" class="upload-progress-text">Загрузка документов…</span>
+  </div>
+  <div id="toast" class="toast glass" role="alert" hidden></div>
+
+  <div id="confirmModal" class="confirm-modal" hidden aria-hidden="true">
+    <div class="confirm-backdrop" data-confirm-dismiss></div>
+    <div
+      class="confirm-dialog glass"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="confirmTitle"
+      aria-describedby="confirmMessage"
+    >
+      <h3 id="confirmTitle" class="confirm-title">Подтвердите действие</h3>
+      <p id="confirmMessage" class="confirm-message"></p>
+      <p id="confirmHint" class="confirm-hint"></p>
+      <div class="confirm-actions">
+        <button type="button" id="confirmCancel" class="btn btn-ghost">Отмена</button>
+        <button type="button" id="confirmOk" class="btn btn-primary">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
