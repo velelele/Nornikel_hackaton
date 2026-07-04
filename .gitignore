@@ -10,3 +10,7 @@ uploads/
 .DS_Store
 .idea/
 .vscode/
+data/knowledge_store/
+data/vector_cache/
+data/snapshots/
+data/exports/

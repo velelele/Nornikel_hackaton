@@ -34,7 +34,7 @@ OTHER_BINARY_EXTENSIONS = {
 
 SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | OFFICE_EXTENSIONS | OTHER_BINARY_EXTENSIONS
 
-# Docling не поддерживает старые бинарные форматы .doc / .ppt / .xls
+# Docling не поддерживает старые бинарные форматы .doc / .ppt / .xls.
 DOCLING_EXTENSIONS = {".docx", ".pptx", ".xlsx", ".pdf", ".html", ".htm", ".epub"}
 
 
@@ -76,7 +76,7 @@ def _extract_with_markitdown(path: Path) -> str:
         ) from exc
 
     result = MarkItDown().convert(str(path))
-    text = (getattr(result, "text_content", None) or result.markdown or "").strip()
+    text = (getattr(result, "text_content", None) or getattr(result, "markdown", None) or "").strip()
     if not text:
         raise ValueError("Файл не содержит извлекаемого текста")
     return text
@@ -124,67 +124,20 @@ def _extract_via_soffice(path: Path) -> str:
     raise ValueError("LibreOffice вернул пустой текст")
 
 
-def _extract_doc(file_bytes: bytes, path: Path | None = None) -> str:
-    from lightrag.parser.legacy.extractors import _extract_docx
-
+def _extract_doc(path: Path) -> str:
     errors: list[str] = []
-
-    try:
-        text = _extract_docx(file_bytes).strip()
-        if text:
-            return text
-    except Exception as exc:
-        errors.append(f"docx-parser: {exc}")
-
-    if path is not None and path.exists():
-        for extractor, label in (
-            (_extract_with_markitdown, "markitdown"),
-            (_extract_via_soffice, "libreoffice"),
-        ):
-            try:
-                return extractor(path)
-            except Exception as exc:
-                errors.append(f"{label}: {exc}")
-
-    import tempfile
-
-    tmp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = Path(tmp.name)
-        for extractor, label in (
-            (_extract_with_markitdown, "markitdown"),
-            (_extract_via_soffice, "libreoffice"),
-        ):
-            try:
-                return extractor(tmp_path)
-            except Exception as exc:
-                errors.append(f"{label}: {exc}")
-    finally:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
-
+    for extractor, label in (
+        (_extract_with_markitdown, "markitdown"),
+        (_extract_via_soffice, "libreoffice"),
+    ):
+        try:
+            return extractor(path)
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
     detail = "; ".join(errors) if errors else "неизвестная ошибка"
     raise ValueError(
         f"Не удалось прочитать .doc ({detail}). Сохраните файл как .docx или установите LibreOffice."
     )
-
-
-def _extract_with_legacy(path: Path) -> str:
-    suffix = path.suffix.lower().lstrip(".")
-    file_bytes = path.read_bytes()
-
-    from lightrag.parser.legacy.extractors import LegacyExtractionError, extract_text as legacy_extract
-
-    try:
-        text = legacy_extract(file_bytes, suffix).strip()
-    except LegacyExtractionError as exc:
-        raise ValueError(str(exc)) from exc
-
-    if not text:
-        raise ValueError("Файл не содержит извлекаемого текста")
-    return text
 
 
 def _extract_office_or_binary(path: Path) -> str:
@@ -192,25 +145,25 @@ def _extract_office_or_binary(path: Path) -> str:
     errors: list[str] = []
 
     if suffix == ".doc":
-        return _extract_doc(path.read_bytes(), path)
-
-    if suffix in {".docx", ".pptx", ".xlsx", ".pdf"}:
-        try:
-            return _extract_with_legacy(path)
-        except Exception as exc:
-            errors.append(f"legacy: {exc}")
-
-    if suffix in {".html", ".htm", ".epub", ".ppt", ".xls"}:
-        try:
-            return _extract_with_markitdown(path)
-        except Exception as exc:
-            errors.append(f"markitdown: {exc}")
+        return _extract_doc(path)
 
     if suffix in DOCLING_EXTENSIONS:
         try:
             return _extract_with_docling(path)
         except Exception as exc:
             errors.append(f"docling: {exc}")
+
+    if suffix in {".docx", ".pptx", ".xlsx", ".pdf", ".html", ".htm", ".epub", ".ppt", ".xls"}:
+        try:
+            return _extract_with_markitdown(path)
+        except Exception as exc:
+            errors.append(f"markitdown: {exc}")
+
+    if suffix in {".ppt", ".xls"}:
+        try:
+            return _extract_via_soffice(path)
+        except Exception as exc:
+            errors.append(f"libreoffice: {exc}")
 
     detail = "; ".join(errors) if errors else "неизвестная ошибка"
     raise ValueError(f"Не удалось извлечь текст из документа ({detail})")

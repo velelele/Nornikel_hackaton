@@ -1,8 +1,12 @@
 const messagesEl = document.getElementById("messages");
 const chatForm = document.getElementById("chatForm");
 const chatInput = document.getElementById("chatInput");
+const sendBtn = chatForm?.querySelector('.btn-send');
 const uploadBtn = document.getElementById("uploadBtn");
+const folderUploadBtn = document.getElementById("folderUploadBtn");
 const fileInput = document.getElementById("fileInput");
+const folderInput = document.getElementById("folderInput");
+const fastStageFolderInput = document.getElementById("fastStageFolderInput");
 const uploadProgress = document.getElementById("uploadProgress");
 const uploadProgressText = document.getElementById("uploadProgressText");
 const statusBadge = document.getElementById("statusBadge");
@@ -17,10 +21,32 @@ const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const chatSessionList = document.getElementById("chatSessionList");
 const newChatBtn = document.getElementById("newChatBtn");
 const toast = document.getElementById("toast");
+const fastIndexTab = document.getElementById("fastIndexTab");
+const exactIndexTab = document.getElementById("exactIndexTab");
+const fastIndexPanel = document.getElementById("fastIndexPanel");
+const exactIndexPanel = document.getElementById("exactIndexPanel");
+const fastFolderStage1Btn = document.getElementById("fastFolderStage1Btn");
+const exactFilesBtn = document.getElementById("exactFilesBtn");
+const exactFolderBtn = document.getElementById("exactFolderBtn");
+const stage2StartBtn = document.getElementById("stage2StartBtn");
+const stage2ModeSelect = document.getElementById("stage2ModeSelect");
+const stage2ChunksInput = document.getElementById("stage2ChunksInput");
+const stage2ThemeIdsInput = document.getElementById("stage2ThemeIdsInput");
+const themeHints = document.getElementById("themeHints");
+const ingestionStatus = document.getElementById("ingestionStatus");
+const operationPanel = document.getElementById("operationPanel");
+const operationTitle = document.getElementById("operationTitle");
+const operationPercent = document.getElementById("operationPercent");
+const operationProgressBar = document.getElementById("operationProgressBar");
+const operationProgressFill = document.getElementById("operationProgressFill");
+const operationProgressText = document.getElementById("operationProgressText");
+const operationCurrent = document.getElementById("operationCurrent");
 
-const STORAGE_KEY = "nico-chat-sessions-v1";
+const STORAGE_KEY = "nico-chat-sessions-v2";
+let appSymbol = "◈";
+let appTitle = "NiCo";
 const WELCOME_TEXT =
-  "Привет! Я NiCo AI — ваш робот-помощник. Загружайте статьи, отчёты и описания экспериментов — помогу находить связи и отвечать на вопросы по вашим документам.";
+  "◈NiCo готов к работе: загружайте статьи, отчёты, протоколы и презентации — система поможет находить связи и отвечать на вопросы по корпусу.";
 
 let queryMode = "hybrid";
 let sessions = [];
@@ -39,6 +65,57 @@ const INFLIGHT_DOC_STATUSES = new Set([
 
 let statsPollTimer = null;
 let activeTrackPolls = 0;
+let lastHealth = null;
+let lastStats = null;
+let chatReady = false;
+let uploadInProgress = false;
+let activeIngestionRunId = null;
+let ingestionPollTimer = null;
+
+const FILE_UPLOAD_BATCH_SIZE = 3;
+const FOLDER_UPLOAD_BATCH_SIZE = 1;
+const FAST_FOLDER_UPLOAD_BATCH_SIZE = 3;
+const FAST_STAGE_UPLOAD_BATCH_SIZE = 10;
+
+let pendingFileUploadOptions = { source: "files", profile: "balanced", flow: "exact" };
+let pendingFolderUploadOptions = { source: "folder", profile: "fast_fill", flow: "fast_stage1" };
+let activeIndexMode = "fast";
+
+// Hints are used only for browser folder uploads.
+// When a user selects the whole root_dir, Chromium sends paths as
+// root_dir/collection/theme/file. In that case the first artificial
+// root segment should be stripped before sending names to backend.
+const TOPIC_COLLECTION_HINTS = new Set([
+  "журналы", "журнал", "journals", "journal", "articles", "papers",
+  "конференции", "конференция", "conferences", "conference", "proceedings",
+  "патенты", "патент", "patents", "patent",
+  "отчеты", "отчёты", "отчет", "отчёт", "reports", "report",
+  "нормативы", "стандарты", "гост", "gost", "standards", "standard",
+  "презентации", "presentations", "presentation",
+  "книги", "books", "book",
+]);
+
+
+function renderBrandText(element, value, { markOnly = false } = {}) {
+  if (!element) return;
+  const raw = String(value || (markOnly ? "◈" : "NiCo")).trim() || (markOnly ? "◈" : "NiCo");
+  const diamondMatch = raw.match(/^([◈◇◆✦✧])\s*(.*)$/u);
+  const diamond = diamondMatch ? diamondMatch[1] : "";
+  const word = (diamondMatch ? diamondMatch[2] : raw).trim();
+  element.innerHTML = "";
+  if (diamond || markOnly) {
+    const diamondSpan = document.createElement("span");
+    diamondSpan.className = "brand-diamond";
+    diamondSpan.textContent = diamond || "◈";
+    element.appendChild(diamondSpan);
+  }
+  if (!markOnly && word) {
+    const wordSpan = document.createElement("span");
+    wordSpan.className = "brand-word";
+    wordSpan.textContent = word;
+    element.appendChild(wordSpan);
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,7 +139,7 @@ function stopStatsPolling() {
 }
 
 function updateStatsPolling(stats) {
-  if (stats?.pipeline_busy || hasInflightDocuments(stats?.documents) || activeTrackPolls > 0) {
+  if (uploadInProgress || stats?.pipeline_busy || hasInflightDocuments(stats?.documents) || activeTrackPolls > 0) {
     startStatsPolling();
     return;
   }
@@ -73,8 +150,39 @@ function isMobileLayout() {
   return window.matchMedia("(max-width: 768px)").matches;
 }
 
+function getKnowledgeReadiness(stats, health) {
+  const documents = stats?.documents || [];
+  const processedCount = stats?.document_count ?? documents.filter((doc) => doc.status === "processed").length;
+  const processingCount = stats?.processing_count ?? 0;
+  const busy = Boolean(stats?.pipeline_busy || health?.pipeline_busy || activeTrackPolls > 0 || uploadInProgress);
+  const inflight = hasInflightDocuments(documents);
+  const ready = Boolean((stats?.knowledge_ready ?? (processedCount > 0 && !processingCount && !busy && !inflight)) && health?.rag_ready !== false);
+  return { ready, processedCount, processingCount, busy, inflight };
+}
+
+function setChatAvailability(stats = lastStats, health = lastHealth) {
+  const state = getKnowledgeReadiness(stats, health);
+  chatReady = state.ready;
+
+  if (chatInput) {
+    chatInput.disabled = !chatReady;
+    chatInput.placeholder = chatReady
+      ? "Задайте вопрос по загруженным документам..."
+      : !health?.rag_ready
+        ? "Сначала настройте LLM/embeddings и дождитесь инициализации базы..."
+        : state.processedCount === 0
+          ? "Сначала загрузите документы и дождитесь построения графа знаний..."
+          : "Граф знаний строится. Чат станет доступен после завершения обработки...";
+  }
+  if (sendBtn) sendBtn.disabled = !chatReady;
+
+  return state;
+}
+
 function setPipelineStatus(stats, health) {
   if (!statusBadge) return;
+
+  const state = setChatAvailability(stats || lastStats, health || lastHealth);
 
   if (health && !health.rag_ready) {
     statusBadge.textContent = "Требуется настройка LLM";
@@ -82,18 +190,25 @@ function setPipelineStatus(stats, health) {
     return;
   }
 
-  const processingCount = stats?.processing_count ?? 0;
-  if (stats?.pipeline_busy || processingCount > 0 || activeTrackPolls > 0) {
-    statusBadge.textContent =
-      processingCount > 0
-        ? `Обработка документов (${processingCount})…`
-        : "Обработка документов…";
+  if (state.busy || state.processingCount > 0 || state.inflight) {
+    const activeRun = (health?.active_ingestion_runs || stats?.active_ingestion_runs || [])[0];
+    statusBadge.textContent = activeRun
+      ? `${activeRun.stage === "stage1" ? "Stage 1" : "Stage 2"}: ${activeRun.processed || 0}/${activeRun.total || "?"}`
+      : state.processingCount > 0
+        ? `Строится граф (${state.processingCount})…`
+        : "Строится граф знаний…";
     statusBadge.className = "badge glass-badge";
     return;
   }
 
-  statusBadge.textContent = health?.rag_ready ? "База знаний готова" : "Подключение…";
-  statusBadge.className = `badge glass-badge ${health?.rag_ready ? "ok" : ""}`;
+  if (state.ready) {
+    statusBadge.textContent = stats?.stage2_ready ? "Stage 2: KG готов" : "Поиск готов";
+    statusBadge.className = "badge glass-badge ok";
+    return;
+  }
+
+  statusBadge.textContent = state.processedCount > 0 ? "Граф не готов" : "Загрузите документы";
+  statusBadge.className = "badge glass-badge";
 }
 
 function createId() {
@@ -219,43 +334,123 @@ function showConfirm({
   });
 }
 
-function setUploadLoading(active, message = "Загрузка документов…") {
-  if (!uploadBtn) return;
+function setButtonLoading(button, active, isPrimary = false) {
+  if (!button) return;
+  button.disabled = active;
+  button.setAttribute("aria-busy", String(active));
+  button.classList.toggle("is-loading", active && isPrimary);
 
-  uploadBtn.disabled = active;
-  uploadBtn.setAttribute("aria-busy", String(active));
-  uploadBtn.classList.toggle("is-loading", active);
+  const spinner = button.querySelector(".btn-spinner");
+  if (spinner) spinner.hidden = !(active && isPrimary);
 
-  const spinner = uploadBtn.querySelector(".btn-spinner");
-  if (spinner) spinner.hidden = !active;
+  const fullLabel = button.querySelector(".btn-text-full");
+  const shortLabel = button.querySelector(".btn-text-short");
 
-  const fullLabel = uploadBtn.querySelector(".btn-text-full");
-  const shortLabel = uploadBtn.querySelector(".btn-text-short");
-
-  if (active) {
+  if (active && isPrimary) {
     if (fullLabel) {
-      if (!uploadBtn.dataset.originalFullLabel) {
-        uploadBtn.dataset.originalFullLabel = fullLabel.textContent;
+      if (!button.dataset.originalFullLabel) {
+        button.dataset.originalFullLabel = fullLabel.textContent;
       }
       fullLabel.textContent = "Загрузка…";
     }
     if (shortLabel) {
-      if (!uploadBtn.dataset.originalShortLabel) {
-        uploadBtn.dataset.originalShortLabel = shortLabel.textContent;
+      if (!button.dataset.originalShortLabel) {
+        button.dataset.originalShortLabel = shortLabel.textContent;
       }
       shortLabel.textContent = "…";
     }
-  } else {
-    if (fullLabel && uploadBtn.dataset.originalFullLabel) {
-      fullLabel.textContent = uploadBtn.dataset.originalFullLabel;
+  } else if (!active) {
+    if (fullLabel && button.dataset.originalFullLabel) {
+      fullLabel.textContent = button.dataset.originalFullLabel;
     }
-    if (shortLabel && uploadBtn.dataset.originalShortLabel) {
-      shortLabel.textContent = uploadBtn.dataset.originalShortLabel;
+    if (shortLabel && button.dataset.originalShortLabel) {
+      shortLabel.textContent = button.dataset.originalShortLabel;
     }
+  }
+}
+
+function setIndexMode(mode) {
+  activeIndexMode = mode === "exact" ? "exact" : "fast";
+  const fast = activeIndexMode === "fast";
+
+  fastIndexTab?.classList.toggle("active", fast);
+  exactIndexTab?.classList.toggle("active", !fast);
+  fastIndexTab?.setAttribute("aria-selected", fast ? "true" : "false");
+  exactIndexTab?.setAttribute("aria-selected", fast ? "false" : "true");
+
+  if (fastIndexPanel) {
+    fastIndexPanel.hidden = !fast;
+    fastIndexPanel.classList.toggle("active", fast);
+  }
+  if (exactIndexPanel) {
+    exactIndexPanel.hidden = fast;
+    exactIndexPanel.classList.toggle("active", !fast);
+  }
+
+  if (ingestionStatus && !activeIngestionRunId && !uploadInProgress) {
+    ingestionStatus.textContent = fast
+      ? "Быстрый запуск: выберите папку. После Stage 1 поиск будет доступен сразу; граф можно достроить отдельной кнопкой."
+      : "Полная сборка: прежняя логика с немедленным построением LightRAG runtime для небольших наборов документов.";
+  }
+}
+
+
+function formatProgressPercent(processed, total) {
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const value = Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+  return value;
+}
+
+function setOperationProgress({
+  active = false,
+  title = "Операция не запущена",
+  processed = 0,
+  total = 0,
+  text = "Выберите режим индексирования.",
+  current = "",
+  error = false,
+  done = false,
+} = {}) {
+  if (!operationPanel) return;
+  operationPanel.classList.toggle("active", active || done || error);
+  operationPanel.classList.toggle("error", Boolean(error));
+  operationPanel.classList.toggle("done", Boolean(done) && !error);
+
+  const numericProcessed = Number(processed) || 0;
+  const numericTotal = Number(total) || 0;
+  const percent = formatProgressPercent(numericProcessed, numericTotal);
+  // Use an indeterminate animation only when the backend cannot provide a denominator.
+  // Previously any non-empty current message forced indeterminate mode, so Stage 2
+  // looked like it had no progress bar even when processed/total were known.
+  const showActivity = active && percent === null;
+  if (operationTitle) operationTitle.textContent = title;
+  if (operationProgressText) operationProgressText.textContent = text;
+  if (operationCurrent) operationCurrent.textContent = current || "";
+
+  if (operationProgressBar) {
+    operationProgressBar.classList.toggle("indeterminate", showActivity);
+    operationProgressBar.setAttribute("aria-valuenow", percent === null ? "0" : String(percent));
+  }
+  if (operationProgressFill) {
+    operationProgressFill.style.width = showActivity ? "38%" : (percent === null ? "35%" : `${percent}%`);
+  }
+  if (operationPercent) {
+    operationPercent.textContent = percent === null ? (active ? "идёт" : "—") : `${percent}%`;
+  }
+}
+
+function setUploadLoading(active, message = "Загрузка документов…", source = "files") {
+  setButtonLoading(uploadBtn, active, source === "files");
+  setButtonLoading(folderUploadBtn, active, source === "folder");
+
+  if (active) {
+    setOperationProgress({ active: true, title: message.includes("Stage 1") ? "Быстрый запуск" : "Полная сборка", text: message });
   }
 
   if (uploadProgress && uploadProgressText) {
-    uploadProgress.hidden = !active;
+    // Progress is now rendered inside the Indexing panel; keep the old floating
+    // bubble disabled to avoid duplicated controls.
+    uploadProgress.hidden = true;
     if (active) uploadProgressText.textContent = message;
   }
 }
@@ -267,7 +462,7 @@ function renderMessage(role, text, sources = []) {
   const avatar = document.createElement("div");
   avatar.className = "avatar";
   avatar.setAttribute("aria-hidden", "true");
-  avatar.textContent = role === "user" ? "Вы" : "NiCo";
+  avatar.textContent = role === "user" ? "Вы" : appSymbol;
 
   const bubble = document.createElement("div");
   bubble.className = role === "assistant" ? "bubble glass-bubble" : "bubble";
@@ -490,8 +685,8 @@ function appendTypingIndicator() {
   wrapper.className = "message assistant typing-indicator";
   wrapper.id = "typingIndicator";
   wrapper.innerHTML = `
-    <div class="avatar" aria-hidden="true">NiCo</div>
-    <div class="bubble glass-bubble"><p class="bubble-text">Николя думает…</p></div>
+    <div class="avatar" aria-hidden="true">${appSymbol}</div>
+    <div class="bubble glass-bubble"><p class="bubble-text">${appSymbol} думает…</p></div>
   `;
   messagesEl.appendChild(wrapper);
   scrollMessagesToBottom();
@@ -522,7 +717,7 @@ function updateKnowledgeCounts(documents, entities) {
 }
 
 function canDeleteDocument(doc) {
-  if (!doc?.id) return false;
+  if (!doc?.id || doc.deletable === false) return false;
   return !INFLIGHT_DOC_STATUSES.has(doc.status);
 }
 
@@ -551,6 +746,7 @@ async function deleteDocument(doc) {
     await refreshStats();
   } catch (error) {
     showToast(error.message, true);
+    setOperationProgress({ error: true, title: "Построение графа знаний / Stage 2", text: error.message });
   }
 }
 
@@ -583,7 +779,8 @@ function renderDocumentList(documents = []) {
     const statusLabel = formatDocumentStatus(doc.status);
     const chunks = doc.chunks ? `${doc.chunks} фрагм.` : "";
     const chars = doc.chars ? `${doc.chars.toLocaleString("ru-RU")} симв.` : "";
-    meta.textContent = [statusLabel, chunks, chars].filter(Boolean).join(" · ");
+    const theme = doc.theme_id ? `тема: ${doc.theme_id}` : "";
+    meta.textContent = [statusLabel, chunks, chars, theme].filter(Boolean).join(" · ");
 
     main.appendChild(name);
     main.appendChild(meta);
@@ -644,17 +841,29 @@ async function api(path, options = {}) {
   return data;
 }
 
-let lastHealth = null;
-
 async function loadConfig() {
   const config = await api("/api/config");
   queryMode = config.query_mode || "hybrid";
+  appSymbol = config.app_symbol || appSymbol;
+  appTitle = config.app_title || appTitle;
+  document.title = appTitle;
+  const brandTitle = document.querySelector(".brand-title");
+  const brandMark = document.querySelector(".brand-mark");
+  renderBrandText(brandTitle, appTitle);
+  renderBrandText(brandMark, appSymbol, { markOnly: true });
+  const profiles = config.ingestion_profiles || {};
+  const retrievalProfile = profiles.overnight_retrieval_kg || {};
+  if (stage2ChunksInput && retrievalProfile.max_chunks_per_document_for_graph) {
+    stage2ChunksInput.value = String(retrievalProfile.max_chunks_per_document_for_graph);
+    stage2ChunksInput.placeholder = String(retrievalProfile.max_chunks_per_document_for_graph);
+  }
+  updateStage2Controls();
 }
 
 async function refreshHealth() {
   try {
     lastHealth = await api("/api/health");
-    setPipelineStatus(null, lastHealth);
+    setPipelineStatus(lastStats, lastHealth);
   } catch {
     lastHealth = null;
     statusBadge.textContent = "Сервис недоступен";
@@ -662,63 +871,353 @@ async function refreshHealth() {
   }
 }
 
+
+function renderThemeHints(themes = []) {
+  if (!themeHints) return;
+  themeHints.innerHTML = "";
+  const values = [];
+  const seen = new Set();
+  for (const row of themes || []) {
+    for (const value of [row.theme_id, row.collection, row.theme_name]) {
+      const text = String(value || "").trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      values.push(text);
+    }
+  }
+  for (const value of values.slice(0, 300)) {
+    const option = document.createElement("option");
+    option.value = value;
+    themeHints.appendChild(option);
+  }
+}
+
+function updateStage2Controls() {
+  const selectedMode = stage2ModeSelect?.value || "retrieval_kg";
+  const lightragMode = selectedMode === "compressed_lightrag" || selectedMode === "full_kg";
+  if (stage2ChunksInput) {
+    stage2ChunksInput.disabled = selectedMode === "retrieval_kg";
+    stage2ChunksInput.placeholder = selectedMode === "retrieval_kg" ? "не требуется" : (selectedMode === "compressed_lightrag" ? "4" : "6");
+  }
+  if (stage2ThemeIdsInput) {
+    stage2ThemeIdsInput.placeholder = lightragMode
+      ? "необязательно: конференции, ALTA или theme_id; пусто = все темы"
+      : "необязательно: конференции, ALTA или theme_id";
+  }
+}
+
 async function refreshStats() {
   try {
     const stats = await api("/api/knowledge/stats");
+    lastStats = stats;
     updateKnowledgeCounts(stats.document_count ?? 0, stats.entities);
     renderDocumentList(stats.documents || []);
-    labelsPreview.textContent = stats.labels_preview?.length
-      ? `Примеры сущностей: ${stats.labels_preview.join(", ")}`
-      : stats.processing_count
-        ? `Обрабатывается документов: ${stats.processing_count}. Граф обновится по завершении.`
-        : stats.document_count
-          ? "Граф знаний строится по загруженным документам."
-          : "Загрузите документы, чтобы построить базу.";
+    renderThemeHints(stats.themes || []);
+    const activeRun = (stats.active_ingestion_runs || [])[0];
+    labelsPreview.textContent = activeRun
+      ? `${activeRun.stage === "stage1" ? "Stage 1" : "Stage 2"}: ${activeRun.processed || 0}/${activeRun.total || "?"}; ok=${activeRun.ok || 0}; failed=${activeRun.failed || 0}; ${activeRun.current || ""}`
+      : stats.labels_preview?.length
+        ? `Примеры сущностей: ${stats.labels_preview.join(", ")}`
+        : stats.processing_count
+          ? `Обрабатывается документов: ${stats.processing_count}. Граф обновится по завершении.`
+          : stats.stage2_ready
+            ? `Stage 2 выполнен: построен граф знаний для тем ${stats.stage2_ready_theme_count || 0}; LightRAG runtime: ${stats.runtime_ready_theme_count || 0}. Поиск использует KG/retrieval-слой поверх knowledge_store.`
+            : stats.knowledge_ready
+              ? "Поиск доступен. Stage 2 ещё не выполнен для графа знаний."
+              : stats.document_count
+              ? "Документы есть, но индекс ещё не готов."
+              : "Загрузите документы, чтобы построить базу знаний.";
     setPipelineStatus(stats, lastHealth);
     updateStatsPolling(stats);
     return stats;
   } catch {
+    lastStats = null;
     updateKnowledgeCounts(null, null);
     renderDocumentList([]);
     labelsPreview.textContent = "";
+    setChatAvailability(null, lastHealth);
     return null;
   }
 }
 
-async function pollTrackStatus(trackId) {
-  if (!trackId) return;
+function setIngestionButtons(active) {
+  if (fastFolderStage1Btn) fastFolderStage1Btn.disabled = active || uploadInProgress;
+  if (exactFilesBtn) exactFilesBtn.disabled = active || uploadInProgress;
+  if (exactFolderBtn) exactFolderBtn.disabled = active || uploadInProgress;
+  if (stage2StartBtn) stage2StartBtn.disabled = active || uploadInProgress;
+}
+
+function renderIngestionRun(run) {
+  if (!run) return;
+  const total = run.total || 0;
+  const processed = run.processed || 0;
+  const ok = run.ok || 0;
+  const failed = run.failed || 0;
+  const skipped = run.skipped || 0;
+  const phase = run.phase || run.status || "";
+  const detail = run.progress_detail || "";
+  const stageName = run.stage === "stage1" ? "Быстрый запуск / Stage 1" : "Достройка графа / Stage 2";
+  const current = run.current || "";
+  const lastError = run.errors?.length ? run.errors[run.errors.length - 1].error : "";
+  const lastMessage = run.messages?.length ? run.messages[run.messages.length - 1].message : "";
+  const text = `${run.status} · ${phase} · обработано ${processed}/${total || "?"}; ok=${ok}; skipped=${skipped}; failed=${failed}`;
+  const currentLine = lastError
+    ? `Ошибка: ${lastError}`
+    : [current, detail, lastMessage].filter(Boolean).join(" · ");
+
+  if (ingestionStatus) {
+    ingestionStatus.textContent = `${stageName}: ${text}${currentLine ? `; ${currentLine}` : ""}`;
+  }
+  setOperationProgress({
+    active: ["queued", "running", "cancelling"].includes(run.status),
+    done: run.status === "completed",
+    error: !["queued", "running", "cancelling", "completed"].includes(run.status),
+    title: stageName,
+    processed,
+    total,
+    text,
+    current: currentLine,
+  });
+}
+
+async function pollIngestionRun(runId) {
+  activeIngestionRunId = runId;
+  setIngestionButtons(true);
+  if (ingestionPollTimer) clearInterval(ingestionPollTimer);
+
+  const tick = async () => {
+    try {
+      const run = await api(`/api/ingestion/runs/${encodeURIComponent(runId)}`);
+      renderIngestionRun(run);
+      await refreshHealth();
+      await refreshStats();
+      if (!["queued", "running", "cancelling"].includes(run.status)) {
+        clearInterval(ingestionPollTimer);
+        ingestionPollTimer = null;
+        activeIngestionRunId = null;
+        setIngestionButtons(false);
+        showToast(
+          run.status === "completed"
+            ? `${run.stage === "stage1" ? "Stage 1" : "Stage 2"} завершён`
+            : `${run.stage === "stage1" ? "Stage 1" : "Stage 2"}: ${run.status}`,
+          run.status !== "completed",
+          { success: run.status === "completed" },
+        );
+      }
+    } catch (error) {
+      clearInterval(ingestionPollTimer);
+      ingestionPollTimer = null;
+      activeIngestionRunId = null;
+      setIngestionButtons(false);
+      showToast(error.message, true);
+    }
+  };
+
+  await tick();
+  ingestionPollTimer = setInterval(tick, 3000);
+}
+
+
+function supportedUploadExtension(name) {
+  const suffix = String(name || "").toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+  const accept = (fileInput?.accept || folderInput?.accept || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  return !accept.length || accept.includes(suffix);
+}
+
+async function collectDirectoryFiles(directoryHandle, prefix = "") {
+  const files = [];
+  const uploadNames = new Map();
+  const entries = [];
+
+  for await (const [name, handle] of directoryHandle.entries()) {
+    entries.push([name, handle]);
+  }
+  entries.sort((a, b) => a[0].localeCompare(b[0], "ru"));
+
+  for (const [name, handle] of entries) {
+    const relative = prefix ? `${prefix}/${name}` : name;
+    if (handle.kind === "directory") {
+      const nested = await collectDirectoryFiles(handle, relative);
+      for (const file of nested.files) files.push(file);
+      for (const [file, uploadName] of nested.uploadNames.entries()) {
+        uploadNames.set(file, uploadName);
+      }
+    } else if (handle.kind === "file" && supportedUploadExtension(name)) {
+      const file = await handle.getFile();
+      uploadNames.set(file, relative);
+      files.push(file);
+    }
+  }
+  return { files, uploadNames };
+}
+
+function openFastStageFolderInput() {
+  pendingFolderUploadOptions = { source: "folder", profile: "fast_fill", flow: "fast_stage1_staged" };
+  const input = fastStageFolderInput || folderInput;
+  if (!input) {
+    showToast("В интерфейсе не найден input для выбора папки. Перезагрузите страницу.", true);
+    return;
+  }
+  if (!supportsFolderPicker()) {
+    showToast("Этот браузер не поддерживает загрузку папок. Используйте Chromium/Chrome/Edge или CLI stage1_fast_fill.py.", true);
+    return;
+  }
+  input.value = "";
+  input.click();
+}
+
+async function startFastStage1FolderUpload() {
+  if (uploadInProgress) {
+    showToast("Дождитесь завершения текущей загрузки.", true);
+    return;
+  }
+
+  // Chromium sometimes ignores click() on a reused hidden folder input after
+  // previous uploads or after a layout re-render. Use the File System Access API
+  // first when it is available, because it is a direct directory picker tied to
+  // this button click. Fall back to a dedicated hidden webkitdirectory input.
+  if (typeof window.showDirectoryPicker === "function") {
+    try {
+      setOperationProgress({
+        active: true,
+        title: "Быстрый запуск",
+        text: "Открытие выбора папки…",
+      });
+      const directoryHandle = await window.showDirectoryPicker({ mode: "read" });
+      const { files, uploadNames } = await collectDirectoryFiles(directoryHandle);
+      if (!files.length) {
+        showToast("В выбранной папке не найдено поддерживаемых документов.", true);
+        setOperationProgress({ error: true, title: "Быстрый запуск", text: "Поддерживаемые файлы не найдены." });
+        return;
+      }
+      await stagedStage1FolderUpload(files, uploadNames);
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        setOperationProgress({ title: "Операция не запущена", text: "Выбор папки отменён." });
+        return;
+      }
+      console.warn("showDirectoryPicker failed, falling back to webkitdirectory input", error);
+      // Continue to the webkitdirectory input fallback below.
+    }
+  }
+
+  openFastStageFolderInput();
+}
+
+async function startStage2FromWeb() {
+  const rawSelectedMode = stage2ModeSelect?.value || "retrieval_kg";
+  const selectedMode = rawSelectedMode === "compressed_kg" ? "retrieval_kg" : rawSelectedMode;
+  const graphMode = selectedMode === "compressed_lightrag" ? "compressed_kg" : selectedMode;
+  const rawChunks = stage2ChunksInput?.value.trim();
+  const maxChunksPerDocument = rawChunks ? Number(rawChunks) : null;
+  const themeIds = (stage2ThemeIdsInput?.value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const buildRuntimeIndex = selectedMode === "compressed_lightrag" || selectedMode === "full_kg";
+  setOperationProgress({
+    active: true,
+    title: "Построение графа знаний / Stage 2",
+    text: buildRuntimeIndex ? "Построение LightRAG-графа с контролем таймаута…" : "Построение поискового графа знаний без записи LightRAG-графа…",
+  });
+  const profile = selectedMode === "full_kg"
+    ? "overnight_full"
+    : selectedMode === "compressed_lightrag"
+      ? "overnight_compressed_lightrag"
+      : "overnight_retrieval_kg";
+  const defaultChunks = selectedMode === "compressed_lightrag" ? 4 : 6;
+  try {
+    const result = await api("/api/ingestion/stage2/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        profile,
+        graph_mode: graphMode,
+        build_runtime_index: buildRuntimeIndex,
+        theme_ids: themeIds,
+        wait: buildRuntimeIndex,
+        timeout_sec: buildRuntimeIndex ? (selectedMode === "full_kg" ? 900 : 600) : 0,
+        max_chunks_per_document: selectedMode === "retrieval_kg" ? 0 : (Number.isFinite(maxChunksPerDocument) && maxChunksPerDocument > 0 ? maxChunksPerDocument : defaultChunks),
+        rebuild_graph_metrics_after: false,
+        rebuild_theme_embeddings_after: false,
+        build_global_router_after: true,
+        force: true,
+      }),
+    });
+    showToast(result.message || "Stage 2 запущен", false, { success: true });
+    await pollIngestionRun(result.run_id);
+  } catch (error) {
+    showToast(error.message, true);
+    setOperationProgress({ error: true, title: "Построение графа знаний / Stage 2", text: error.message });
+  }
+}
+
+fastIndexTab?.addEventListener("click", () => setIndexMode("fast"));
+exactIndexTab?.addEventListener("click", () => setIndexMode("exact"));
+fastFolderStage1Btn?.addEventListener("click", startFastStage1FolderUpload);
+exactFilesBtn?.addEventListener("click", () => openFilePicker({ source: "files", profile: "balanced", flow: "exact" }));
+exactFolderBtn?.addEventListener("click", () => openFolderPicker({ source: "folder", profile: "balanced", flow: "exact" }));
+stage2ModeSelect?.addEventListener("change", updateStage2Controls);
+stage2StartBtn?.addEventListener("click", startStage2FromWeb);
+
+async function pollTrackStatus(trackId, { silent = false } = {}) {
+  if (!trackId) return null;
 
   activeTrackPolls += 1;
   startStatsPolling();
-  setPipelineStatus(null, lastHealth);
+  setPipelineStatus(lastStats, lastHealth);
 
   const deadline = Date.now() + TRACK_POLL_TIMEOUT_MS;
+  let lastTrack = null;
 
   try {
     while (Date.now() < deadline) {
       const track = await api(`/api/knowledge/track/${encodeURIComponent(trackId)}`);
+      lastTrack = track;
+      const total = track.total_count || 0;
+      const done = (track.processed_count || 0) + (track.failed_count || 0);
+      if (uploadProgressText && uploadInProgress && total) {
+        uploadProgressText.textContent = `Строится граф: ${done}/${total} объектов…`;
+      }
+      if (total) {
+        setOperationProgress({
+          active: true,
+          title: "Полная сборка: построение LightRAG runtime",
+          processed: done,
+          total,
+          text: `Строится граф: ${done}/${total} объектов`,
+        });
+      }
       await refreshStats();
 
       if (track.is_complete) {
-        if (track.processed_count > 0 && track.failed_count === 0) {
-          showToast(`Обработано документов: ${track.processed_count}`);
-        } else if (track.processed_count > 0) {
-          showToast(
-            `Готово ${track.processed_count}, ошибок ${track.failed_count}`,
-            track.failed_count > 0,
-          );
-        } else if (track.failed_count > 0) {
-          showToast(`Не удалось обработать документы (${track.failed_count})`, true);
+        if (!silent) {
+          if (track.processed_count > 0 && track.failed_count === 0) {
+            showToast(`Обработано документов: ${track.processed_count}`);
+          } else if (track.processed_count > 0) {
+            showToast(
+              `Готово ${track.processed_count}, ошибок ${track.failed_count}`,
+              track.failed_count > 0,
+            );
+          } else if (track.failed_count > 0) {
+            showToast(`Не удалось обработать документы (${track.failed_count})`, true);
+          }
         }
-        return;
+        return track;
       }
 
       await sleep(TRACK_POLL_MS);
     }
 
-    showToast("Обработка ещё идёт — статус обновится автоматически.");
+    if (!silent) showToast("Обработка ещё идёт — статус обновится автоматически.");
+    return lastTrack;
   } catch (error) {
-    showToast(error.message, true);
+    if (!silent) showToast(error.message, true);
+    throw error;
   } finally {
     activeTrackPolls = Math.max(0, activeTrackPolls - 1);
     await refreshHealth();
@@ -774,6 +1273,12 @@ chatInput.addEventListener("keydown", (event) => {
 
 chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!chatReady) {
+    showToast("Чат станет доступен после Stage 1 или полной сборки.", true);
+    setChatAvailability(lastStats, lastHealth);
+    return;
+  }
+
   const message = chatInput.value.trim();
   if (!message) return;
 
@@ -784,6 +1289,7 @@ chatForm.addEventListener("submit", async (event) => {
   chatInput.value = "";
   autoResizeTextarea();
   chatInput.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
   appendTypingIndicator();
 
   const historyForRequest = session.messages
@@ -804,65 +1310,432 @@ chatForm.addEventListener("submit", async (event) => {
     removeTypingIndicator();
     appendMessage("assistant", `Ошибка: ${error.message}`);
   } finally {
-    chatInput.disabled = false;
-    chatInput.focus();
+    setChatAvailability(lastStats, lastHealth);
+    if (chatReady) chatInput.focus();
   }
 });
 
-uploadBtn.addEventListener("click", () => {
-  if (uploadBtn.disabled) return;
+function openFilePicker(options = {}) {
+  if (uploadInProgress || !fileInput) return;
+  pendingFileUploadOptions = {
+    source: "files",
+    profile: options.profile || "balanced",
+    flow: options.flow || "exact",
+  };
+  fileInput.value = "";
   fileInput.click();
+}
+
+uploadBtn?.addEventListener("click", () => {
+  if (uploadBtn.disabled) return;
+  openFilePicker({ source: "files", profile: "balanced", flow: "exact" });
 });
 
-fileInput.addEventListener("change", async () => {
-  const files = Array.from(fileInput.files || []);
-  if (!files.length) return;
+folderUploadBtn?.addEventListener("click", () => {
+  if (folderUploadBtn.disabled || uploadInProgress) return;
+  openFolderPicker({ source: "folder", profile: "fast_fill", flow: "fast_stage1" });
+});
 
-  const progressMessage =
-    files.length === 1
-      ? `Загружаю «${files[0].name}»…`
-      : `Загружаю ${files.length} документов…`;
+function supportsFolderPicker() {
+  const probe = document.createElement("input");
+  probe.type = "file";
+  return "webkitdirectory" in probe || "directory" in probe;
+}
 
-  setUploadLoading(true, progressMessage);
+function openFolderPicker(options = {}) {
+  pendingFolderUploadOptions = {
+    source: options.source || "folder",
+    profile: options.profile || "fast_fill",
+    flow: options.flow || "fast_stage1",
+  };
+  if (!supportsFolderPicker()) {
+    showToast("Этот браузер не поддерживает загрузку папок. Используйте Chromium/Chrome/Edge или CLI ingest_topics.py.", true);
+    return;
+  }
+
+  // Prefer the persistent hidden input from index.html. It is more reliable
+  // than a short-lived dynamic input in Chromium-based browsers.
+  if (folderInput) {
+    folderInput.value = "";
+    folderInput.click();
+    return;
+  }
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.multiple = true;
+  input.accept = fileInput?.accept || "";
+  input.style.position = "fixed";
+  input.style.left = "-9999px";
+  input.setAttribute("webkitdirectory", "");
+  input.setAttribute("directory", "");
+  input.webkitdirectory = true;
+  input.addEventListener("change", async () => {
+    try {
+      if (pendingFolderUploadOptions?.flow === "fast_stage1_staged") {
+        await stagedStage1FolderUpload(input.files);
+      } else {
+        await uploadSelectedFiles(input.files, pendingFolderUploadOptions);
+      }
+    } finally {
+      input.remove();
+    }
+  });
+  document.body.appendChild(input);
+  input.click();
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function splitUploadPath(path) {
+  return String(path || "")
+    .replaceAll("\\", "/")
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "." && part !== "..");
+}
+
+function normalizeTopicPart(part) {
+  return String(part || "").trim().toLowerCase().replaceAll("ё", "е");
+}
+
+function looksLikeCollection(part) {
+  return TOPIC_COLLECTION_HINTS.has(normalizeTopicPart(part));
+}
+
+function rawUploadName(file) {
+  return file.webkitRelativePath || file.name || "без_имени";
+}
+
+function normalizeUploadName(file, uploadNames = null) {
+  return uploadNames?.get(file) || rawUploadName(file);
+}
+
+function buildFolderUploadNames(files) {
+  const uploadNames = new Map();
+  const fileList = Array.from(files || []);
+  const paths = fileList.map((file) => splitUploadPath(rawUploadName(file)));
+
+  const relativePathCount = fileList.filter((file) => Boolean(file.webkitRelativePath)).length;
+  if (relativePathCount === 0) {
+    showToast("Браузер не передал относительные пути. Документы попадут в тему misc/unclassified.", true);
+  }
+
+  const candidatePaths = paths.filter((parts) => parts.length >= 2);
+  const firstSegment = candidatePaths[0]?.[0];
+  const sameTopFolder = Boolean(firstSegment) && candidatePaths.every((parts) => parts[0] === firstSegment);
+  const shouldStripSelectedRoot = Boolean(
+    sameTopFolder &&
+      candidatePaths.some((parts) => parts.length >= 4) &&
+      !looksLikeCollection(firstSegment) &&
+      candidatePaths.some((parts) => looksLikeCollection(parts[1])),
+  );
+
+  fileList.forEach((file, index) => {
+    let parts = paths[index];
+    if (shouldStripSelectedRoot && parts.length > 1) {
+      parts = parts.slice(1);
+    }
+    uploadNames.set(file, parts.join("/") || file.name || "без_имени");
+  });
+
+  if (shouldStripSelectedRoot) {
+    console.info("◈NiCo folder upload: stripped selected root folder", firstSegment);
+  }
+  return uploadNames;
+}
+
+async function uploadStage1StagingBatch(sessionId, batch, uploadNames = null) {
+  const formData = new FormData();
+  for (const file of batch) {
+    formData.append("files", file, normalizeUploadName(file, uploadNames));
+  }
+
+  const response = await fetch(`/api/ingestion/stage1/upload-batch?session_id=${encodeURIComponent(sessionId)}`, {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map((item) => item.msg || item).join("; ")
+      : data.detail;
+    throw new Error(detail || "Не удалось сохранить файлы во временную папку Stage 1");
+  }
+  return data;
+}
+
+async function startStagedStage1(sessionId) {
+  return api("/api/ingestion/stage1/staged/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      limit: null,
+      profile: "fast_fill",
+      skip_existing: true,
+      build_runtime_index: false,
+      cleanup_after: true,
+      rebuild_graph_metrics_after: false,
+      rebuild_theme_embeddings_after: false,
+      build_global_router_after: true,
+    }),
+  });
+}
+
+async function stagedStage1FolderUpload(files, explicitUploadNames = null) {
+  const selected = Array.from(files || []);
+  if (!selected.length) return;
+  if (uploadInProgress) {
+    showToast("Дождитесь завершения текущей загрузки.", true);
+    return;
+  }
+
+  const uploadNames = explicitUploadNames || buildFolderUploadNames(selected);
+  const batches = chunkArray(selected, FAST_STAGE_UPLOAD_BATCH_SIZE);
+  const sessionId = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  uploadInProgress = true;
+  setIngestionButtons(true);
+  startStatsPolling();
+  if (ingestionStatus) {
+    ingestionStatus.textContent = "Быстрый запуск: загрузка файлов во временное хранилище. Парсинг запустится фоном после загрузки.";
+  }
+  setOperationProgress({
+    active: true,
+    title: "Быстрый запуск: подготовка Stage 1",
+    processed: 0,
+    total: selected.length,
+    text: "Загрузка выбранной папки на сервер без парсинга",
+  });
+
+  let saved = 0;
+  let failed = 0;
+  try {
+    for (let index = 0; index < batches.length; index += 1) {
+      const batch = batches[index];
+      const batchFrom = index * FAST_STAGE_UPLOAD_BATCH_SIZE + 1;
+      const batchTo = Math.min((index + 1) * FAST_STAGE_UPLOAD_BATCH_SIZE, selected.length);
+      const current = normalizeUploadName(batch[0], uploadNames);
+      setOperationProgress({
+        active: true,
+        title: "Быстрый запуск: загрузка папки",
+        processed: batchFrom - 1,
+        total: selected.length,
+        text: `Загрузка файлов на сервер: ${batchFrom}-${batchTo}/${selected.length}`,
+        current,
+      });
+      const data = await uploadStage1StagingBatch(sessionId, batch, uploadNames);
+      saved += data.saved || 0;
+      failed += data.failed || 0;
+      setOperationProgress({
+        active: true,
+        title: "Быстрый запуск: загрузка папки",
+        processed: batchTo,
+        total: selected.length,
+        text: `Файлы загружены: ${batchTo}/${selected.length}; ошибок сохранения ${failed}`,
+        current: normalizeUploadName(batch[batch.length - 1], uploadNames),
+      });
+    }
+
+    setOperationProgress({
+      active: true,
+      title: "Быстрый запуск / Stage 1",
+      processed: selected.length,
+      total: selected.length,
+      text: "Файлы загружены. Запуск фонового парсинга и заполнения knowledge_store…",
+    });
+
+    const result = await startStagedStage1(sessionId);
+    showToast(result.message || "Stage 1 запущен", false, { success: true });
+    if (ingestionStatus) {
+      ingestionStatus.textContent = `Stage 1 запущен: загружено ${saved}, ошибок загрузки ${failed}. Прогресс ниже обновляется с сервера.`;
+    }
+    uploadInProgress = false;
+    setIngestionButtons(true);
+    await pollIngestionRun(result.run_id);
+  } catch (error) {
+    showToast(error.message, true);
+    if (ingestionStatus) ingestionStatus.textContent = `Ошибка Stage 1: ${error.message}`;
+    setOperationProgress({ error: true, title: "Быстрый запуск / Stage 1", text: error.message });
+  } finally {
+    uploadInProgress = false;
+    setIngestionButtons(false);
+    if (folderInput) folderInput.value = "";
+    if (fastStageFolderInput) fastStageFolderInput.value = "";
+    await refreshHealth();
+    await refreshStats();
+  }
+}
+
+async function uploadBatch(batch, uploadNames = null, profile = "balanced") {
+  const formData = new FormData();
+  for (const file of batch) {
+    formData.append("files", file, normalizeUploadName(file, uploadNames));
+  }
+
+  const response = await fetch(`/api/knowledge/upload/batch?profile=${encodeURIComponent(profile)}`, {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map((item) => item.msg || item).join("; ")
+      : data.detail;
+    throw new Error(detail || "Не удалось загрузить документы");
+  }
+  return data;
+}
+
+async function uploadSelectedFiles(files, { source = "files", profile = "balanced", flow = "exact" } = {}) {
+  const selected = Array.from(files || []);
+  if (!selected.length) return;
+  if (uploadInProgress) {
+    showToast("Дождитесь завершения текущей загрузки.", true);
+    return;
+  }
+
+  const isFastStage1 = profile === "fast_fill" || flow === "fast_stage1";
+  const isExact = !isFastStage1;
+  const batchSize = source === "folder"
+    ? (isFastStage1 ? FAST_FOLDER_UPLOAD_BATCH_SIZE : FOLDER_UPLOAD_BATCH_SIZE)
+    : FILE_UPLOAD_BATCH_SIZE;
+  const uploadNames = source === "folder" ? buildFolderUploadNames(selected) : null;
+  const uploadProfile = profile || (isFastStage1 ? "fast_fill" : "balanced");
+  const batches = chunkArray(selected, batchSize);
+  const label = source === "folder" ? "из папки" : "";
+  const modeLabel = isFastStage1 ? "Быстрый запуск / Stage 1" : "Полная сборка";
+
+  uploadInProgress = true;
+  setIngestionButtons(true);
+  setUploadLoading(true, `${modeLabel}: подготовка ${selected.length} документов ${label}…`.replace("  ", " "), source);
+  startStatsPolling();
+
+  let succeeded = 0;
+  let failed = 0;
+  let firstTrackId = "";
 
   try {
-    const formData = new FormData();
-    for (const file of files) {
-      formData.append("files", file);
-    }
-
-    const response = await fetch("/api/knowledge/upload/batch", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      const detail = Array.isArray(data.detail)
-        ? data.detail.map((item) => item.msg || item).join("; ")
-        : data.detail;
-      throw new Error(detail || "Не удалось загрузить документы");
-    }
-
-    for (const item of data.results || []) {
-      if (item.status === "failed" || !item.success) {
-        showToast(`${item.filename}: ${item.message}`, true);
+    for (let index = 0; index < batches.length; index += 1) {
+      const batch = batches[index];
+      const batchFrom = index * batchSize + 1;
+      const batchTo = Math.min((index + 1) * batchSize, selected.length);
+      const firstName = normalizeUploadName(batch[0], uploadNames);
+      const progressMessage = isFastStage1
+        ? `Stage 1: сохранение в knowledge_store ${batchFrom}-${batchTo}/${selected.length}`
+        : `Полная сборка: LightRAG runtime ${batchFrom}-${batchTo}/${selected.length}`;
+      if (uploadProgressText) {
+        uploadProgressText.textContent = `${progressMessage} — ${firstName}`;
       }
-    }
+      setOperationProgress({
+        active: true,
+        title: isFastStage1 ? "Быстрый запуск / Stage 1" : "Полная сборка",
+        processed: batchFrom - 1,
+        total: selected.length,
+        text: progressMessage,
+        current: firstName,
+      });
 
-    if (data.message) {
-      showToast(data.message, data.succeeded === 0);
-    }
+      const data = await uploadBatch(batch, uploadNames, uploadProfile);
+      succeeded += data.succeeded || 0;
+      failed += data.failed || 0;
+      if (!firstTrackId && data.track_id) firstTrackId = data.track_id;
+      setOperationProgress({
+        active: true,
+        title: isFastStage1 ? "Быстрый запуск / Stage 1" : "Полная сборка",
+        processed: batchTo,
+        total: selected.length,
+        text: `${isFastStage1 ? "Сохранение в knowledge_store" : "Отправка в LightRAG runtime"}: ${batchTo}/${selected.length}`,
+        current: normalizeUploadName(batch[batch.length - 1], uploadNames),
+      });
 
-    if (data.track_id) {
-      pollTrackStatus(data.track_id);
-    } else {
+      if (failed && !succeeded) {
+        showToast(data.message || "Не удалось загрузить документы", true);
+      }
       await refreshStats();
+    }
+
+    if (isFastStage1) {
+      if (uploadProgressText) uploadProgressText.textContent = "Stage 1: обновление маршрутизатора тем…";
+      setOperationProgress({
+        active: true,
+        title: "Быстрый запуск / Stage 1",
+        processed: selected.length,
+        total: selected.length,
+        text: "Обновление маршрутизатора тем",
+      });
+      try {
+        await api("/api/themes/rebuild-router", { method: "POST" });
+      } catch (error) {
+        console.warn("Router rebuild after Stage 1 upload failed", error);
+      }
+      await refreshStats();
+      showToast(`Stage 1 завершён: сохранено ${succeeded}, ошибок ${failed}. Поиск доступен.`, failed > 0, { success: succeeded > 0 });
+      if (ingestionStatus) {
+        ingestionStatus.textContent = `Быстрый запуск завершён: сохранено ${succeeded}, ошибок ${failed}. Поиск доступен; граф можно достроить кнопкой «Достроить граф».`;
+      }
+      setOperationProgress({
+        done: failed === 0,
+        error: failed > 0,
+        title: "Быстрый запуск / Stage 1",
+        processed: selected.length,
+        total: selected.length,
+        text: `Поиск доступен. Сохранено ${succeeded}, ошибок ${failed}.`,
+      });
+      return;
+    }
+
+    const message = `Полная сборка: поставлено ${succeeded}, ошибок ${failed}.`;
+    showToast(message, failed > 0, { success: succeeded > 0 });
+    if (ingestionStatus) ingestionStatus.textContent = message;
+    setOperationProgress({
+      done: failed === 0,
+      error: failed > 0,
+      title: "Полная сборка",
+      processed: selected.length,
+      total: selected.length,
+      text: message,
+    });
+
+    if (firstTrackId) {
+      await pollTrackStatus(firstTrackId, { silent: true });
     }
   } catch (error) {
     showToast(error.message, true);
+    if (ingestionStatus) ingestionStatus.textContent = `Ошибка загрузки: ${error.message}`;
+    setOperationProgress({ error: true, title: isFastStage1 ? "Быстрый запуск / Stage 1" : "Полная сборка", text: error.message });
   } finally {
-    setUploadLoading(false);
-    fileInput.value = "";
+    uploadInProgress = false;
+    setUploadLoading(false, "", source);
+    setIngestionButtons(false);
+    if (fileInput) fileInput.value = "";
+    if (folderInput) folderInput.value = "";
+    if (fastStageFolderInput) fastStageFolderInput.value = "";
+    await refreshHealth();
+    await refreshStats();
+  }
+}
+
+fileInput?.addEventListener("change", async () => {
+  await uploadSelectedFiles(fileInput.files, pendingFileUploadOptions);
+});
+
+fastStageFolderInput?.addEventListener("change", async () => {
+  await stagedStage1FolderUpload(fastStageFolderInput.files);
+});
+
+folderInput?.addEventListener("change", async () => {
+  if (pendingFolderUploadOptions?.flow === "fast_stage1_staged") {
+    await stagedStage1FolderUpload(folderInput.files);
+  } else {
+    await uploadSelectedFiles(folderInput.files, pendingFolderUploadOptions);
   }
 });
 
@@ -876,6 +1749,8 @@ fileInput.addEventListener("change", async () => {
   }
   renderSessionList();
   renderChatMessages();
+  setIndexMode("fast");
+  setChatAvailability(null, null);
 
   const [configResult, healthResult, statsResult] = await Promise.allSettled([
     loadConfig(),

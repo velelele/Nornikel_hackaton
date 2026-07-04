@@ -15,6 +15,15 @@ from lightrag.utils import generate_track_id, setup_logger, wrap_embedding_func_
 
 from backend.config_manager import AppConfig
 from backend.embedding_client import embed_texts_http_json, is_openai_embedding_url
+from backend.knowledge_store import KnowledgeStore
+from backend.domain.fact_store import FactStore
+from backend.domain.query_expansion import build_expanded_query, build_structured_context
+from backend.domain.query_parser import get_query_parser
+from backend.lightrag_extraction_repair import (
+    harden_extraction_prompt,
+    is_lightrag_extraction_prompt,
+    repair_lightrag_extraction_output,
+)
 
 setup_logger("lightrag", level="INFO")
 logger = logging.getLogger(__name__)
@@ -34,14 +43,15 @@ _INFLIGHT_DOC_STATUSES = frozenset(
 )
 
 NIKOLA_USER_PROMPT = (
-    "Ты — Николя, робот-помощник платформы «Научный клубок». "
-    "Отвечай кратко и по делу на русском языке: 2–5 предложений, без воды. "
-    "На общие вопросы (приветствие, «что умеешь», «что можешь подсказать») отвечай "
-    "своими словами, без перечисления документов. "
-    "Если в контексте есть Document Chunks, опирайся на них. "
-    "Не добавляй раздел References, ### References или списки источников — их покажет интерфейс. "
-    "Не используй таблицы и длинные markdown-списки. "
-    "Учитывай историю диалога."
+    "Ты — ◈NiCo, R&D ассистент для горно-металлургической карты знаний. "
+    "Отвечай на русском языке, технически точно и только на основании найденного контекста. "
+    "Для каждого существенного вывода указывай: материал, процесс, оборудование, условия, числовые параметры, "
+    "географию и источник, если они есть в контексте. "
+    "Не выдумывай численные значения, единицы измерения, годы и источники. "
+    "Если данных недостаточно, явно пиши: 'В источниках недостаточно данных'. "
+    "Если есть расхождения между источниками, выделяй раздел 'Противоречия'. "
+    "Для инженерных запросов используй структуру: Краткий вывод; Найденные факты; Ограничения; Пробелы. "
+    "На общие вопросы отвечай кратко. Не добавляй отдельный раздел References — источники покажет интерфейс."
 )
 
 _REFERENCE_SECTION_MARKERS = (
@@ -101,6 +111,21 @@ def _normalize_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip()
 
 
+def _human_source_name(source: str) -> str:
+    raw = str(source or "").replace("\\", "/").strip()
+    if not raw:
+        return "unknown"
+    parts = raw.split("#")
+    base = Path(parts[0]).name or parts[0] or raw
+    useful_suffixes = []
+    for suffix in parts[1:]:
+        if suffix.startswith(("kgchunk", "kgcompressed")):
+            continue
+        if suffix.startswith(("page:", "slide:", "chunk:")):
+            useful_suffixes.append(suffix)
+    return base + (("#" + "#".join(useful_suffixes)) if useful_suffixes else "")
+
+
 def _is_general_question(text: str) -> bool:
     normalized = _normalize_match_text(text)
     if _GENERAL_QUESTION_PATTERN.search(normalized):
@@ -139,12 +164,18 @@ def _should_show_sources(
 
 
 class RagService:
-    def __init__(self, working_dir: Path) -> None:
+    def __init__(self, working_dir: Path, knowledge_store_dir: Path | None = None) -> None:
         self.working_dir = working_dir
         self.working_dir.mkdir(parents=True, exist_ok=True)
+        self.knowledge_store = KnowledgeStore(knowledge_store_dir or (self.working_dir.parent / "knowledge_store"))
         self._rag: LightRAG | None = None
         self._config: AppConfig | None = None
         self._lock = asyncio.Lock()
+        self._pipeline_tasks: set[asyncio.Task] = set()
+        legacy_facts = self.working_dir.parent / "domain_facts.jsonl"
+        self.knowledge_store.import_legacy_numeric_facts(legacy_facts)
+        self.fact_store = FactStore(self.knowledge_store.numeric_facts_path)
+        self.query_parser = get_query_parser()
 
     @property
     def is_ready(self) -> bool:
@@ -160,6 +191,10 @@ class RagService:
                 self._rag = None
 
             self._config = config
+            self.knowledge_store.schema_version = config.schema_version
+            self.knowledge_store.ontology_version = config.ontology_version
+            self.knowledge_store.app_version = config.app_version
+            self.knowledge_store._ensure_manifest()
             self._rag = await self._build_rag(config)
 
     async def reinitialize(self, config: AppConfig) -> None:
@@ -168,6 +203,10 @@ class RagService:
                 await self._rag.finalize_storages()
                 self._rag = None
             self._config = config
+            self.knowledge_store.schema_version = config.schema_version
+            self.knowledge_store.ontology_version = config.ontology_version
+            self.knowledge_store.app_version = config.app_version
+            self.knowledge_store._ensure_manifest()
             self._rag = await self._build_rag(config)
 
     async def _complete_llm(self, prompt: str, *, system_prompt: str, max_tokens: int = 256) -> str:
@@ -204,15 +243,38 @@ class RagService:
             extra_body["chat_template_kwargs"] = template_kwargs
             llm_kwargs["extra_body"] = extra_body
 
-            return await openai_complete_if_cache(
+            is_extraction = is_lightrag_extraction_prompt(
+                str(prompt or ""),
+                str(system_prompt or ""),
+                keyword_extraction=bool(keyword_extraction),
+            )
+            effective_prompt = prompt
+            effective_system_prompt = system_prompt
+            if is_extraction and bool(getattr(config, "lightrag_extraction_prompt_hardening", True)):
+                effective_prompt, effective_system_prompt = harden_extraction_prompt(
+                    str(prompt or ""),
+                    str(system_prompt or "") if system_prompt else None,
+                )
+
+            response = await openai_complete_if_cache(
                 config.llm_model,
-                prompt,
-                system_prompt=system_prompt,
+                effective_prompt,
+                system_prompt=effective_system_prompt,
                 history_messages=history_messages or [],
                 api_key=_resolve_api_key(config.llm_api_key),
                 base_url=llm_base_url,
                 **llm_kwargs,
             )
+            if is_extraction and bool(getattr(config, "lightrag_extraction_output_repair", True)):
+                repaired = repair_lightrag_extraction_output(
+                    response,
+                    prompt=str(effective_prompt or prompt or ""),
+                    system_prompt=str(effective_system_prompt or "") if effective_system_prompt else None,
+                )
+                if repaired != response:
+                    logger.info("LightRAG extraction output repaired before parser")
+                return repaired
+            return response
 
         @wrap_embedding_func_with_attrs(
             embedding_dim=config.embedding_dim,
@@ -249,6 +311,11 @@ class RagService:
 
     async def shutdown(self) -> None:
         async with self._lock:
+            for task in list(self._pipeline_tasks):
+                task.cancel()
+            if self._pipeline_tasks:
+                await asyncio.gather(*self._pipeline_tasks, return_exceptions=True)
+                self._pipeline_tasks.clear()
             if self._rag is not None:
                 await self._rag.finalize_storages()
                 self._rag = None
@@ -262,6 +329,8 @@ class RagService:
     async def enqueue_documents_batch(
         self,
         items: list[tuple[str, str]],
+        *,
+        schedule_processing: bool = True,
     ) -> dict[str, Any]:
         if not items:
             return {"track_id": "", "items": []}
@@ -272,12 +341,15 @@ class RagService:
         paths = [name for _, name in items]
 
         await rag.apipeline_enqueue_documents(texts, file_paths=paths, track_id=track_id)
-        self.schedule_document_processing()
+        if schedule_processing:
+            self.schedule_document_processing()
         items_out = await self._build_queued_outcomes(track_id, paths)
         return {"track_id": track_id, "items": items_out}
 
     def schedule_document_processing(self) -> None:
-        asyncio.create_task(self._run_pipeline_safe())
+        task = asyncio.create_task(self._run_pipeline_safe())
+        self._pipeline_tasks.add(task)
+        task.add_done_callback(lambda t: self._pipeline_tasks.discard(t))
 
     async def _run_pipeline_safe(self) -> None:
         rag = self._require_rag()
@@ -337,6 +409,42 @@ class RagService:
             "processed_count": processed_count,
             "failed_count": failed_count,
         }
+
+    async def wait_for_track(
+        self,
+        track_id: str,
+        *,
+        poll_interval: float = 10.0,
+        timeout_sec: float = 0.0,
+        max_empty_polls: int = 30,
+    ) -> dict[str, Any]:
+        """Poll LightRAG doc status until one track is complete.
+
+        timeout_sec <= 0 means no timeout. This is intended for unattended
+        overnight rebuilds where the shell script must not exit before the
+        background LightRAG pipeline finishes.
+        """
+        start = asyncio.get_running_loop().time()
+        empty_polls = 0
+        last_status: dict[str, Any] = {"track_id": track_id, "is_complete": False}
+        while True:
+            last_status = await self.get_track_status(track_id)
+            if int(last_status.get("total_count") or 0) == 0:
+                empty_polls += 1
+                if max_empty_polls > 0 and empty_polls >= max_empty_polls:
+                    last_status["timeout"] = True
+                    last_status["error"] = "No documents appeared for track_id while waiting."
+                    return last_status
+            else:
+                empty_polls = 0
+            if last_status.get("is_complete"):
+                return last_status
+            if timeout_sec and timeout_sec > 0:
+                elapsed = asyncio.get_running_loop().time() - start
+                if elapsed > timeout_sec:
+                    last_status["timeout"] = True
+                    return last_status
+            await asyncio.sleep(max(1.0, float(poll_interval)))
 
     async def _build_queued_outcomes(
         self,
@@ -440,26 +548,65 @@ class RagService:
     ) -> dict[str, Any]:
         rag = self._require_rag()
         conversation_history = _normalize_history(history)
-        result = await rag.aquery_llm(
-            message,
-            param=QueryParam(
-                mode=mode,
-                conversation_history=conversation_history,
-                user_prompt=NIKOLA_USER_PROMPT,
-                response_type="Single Paragraph",
-                enable_rerank=False,
-                include_references=True,
-            ),
+
+        parsed = self.query_parser.parse(message)
+        structured_facts = self.fact_store.search(parsed, limit=12)
+        expanded_query = build_expanded_query(parsed, top_facts=structured_facts)
+        structured_context = build_structured_context(structured_facts)
+        retrieval_message = (
+            f"{expanded_query}\n\n"
+            f"{structured_context}\n\n"
+            f"Ответь на исходный запрос пользователя: {message}"
+        ).strip()
+
+        query_param = QueryParam(
+            mode=mode,
+            conversation_history=conversation_history,
+            user_prompt=NIKOLA_USER_PROMPT,
+            response_type="Structured technical answer",
+            enable_rerank=True,
+            include_references=True,
         )
+        result = await rag.aquery_llm(retrieval_message, param=query_param)
 
         llm_response = result.get("llm_response", {})
         raw_answer = llm_response.get("content") or ""
+        references = result.get("data", {}).get("references", [])
+        chunks = result.get("data", {}).get("chunks", [])
+
+        # Compressed LightRAG can build chunk vectors but fail KG keyword routing
+        # (e.g. Query nodes: author name; Raw search results: 0/0/0). Retry with
+        # vector-only/naive retrieval before declaring no-context. This preserves
+        # the useful old compressed-LightRAG behaviour for slide/PDF fragments.
+        if (not _has_retrieved_context(references, chunks)) and str(mode).lower() != "naive":
+            try:
+                retry_result = await rag.aquery_llm(
+                    retrieval_message,
+                    param=QueryParam(
+                        mode="naive",
+                        conversation_history=conversation_history,
+                        user_prompt=NIKOLA_USER_PROMPT,
+                        response_type="Structured technical answer",
+                        enable_rerank=True,
+                        include_references=True,
+                    ),
+                )
+                retry_refs = retry_result.get("data", {}).get("references", [])
+                retry_chunks = retry_result.get("data", {}).get("chunks", [])
+                retry_raw = (retry_result.get("llm_response", {}) or {}).get("content") or ""
+                if _has_retrieved_context(retry_refs, retry_chunks) or (retry_raw and "[no-context]" not in retry_raw):
+                    result = retry_result
+                    llm_response = result.get("llm_response", {})
+                    raw_answer = llm_response.get("content") or ""
+                    references = retry_refs
+                    chunks = retry_chunks
+            except Exception as exc:
+                logger.warning("LightRAG naive retry failed: %s", exc)
+
         answer = _clean_answer(raw_answer)
         if answer == "Ответ не получен." and result.get("status") == "failure":
             answer = result.get("message") or answer
 
-        references = result.get("data", {}).get("references", [])
-        chunks = result.get("data", {}).get("chunks", [])
         sources = (
             self._format_sources(references, chunks)
             if _should_show_sources(message, raw_answer, references, chunks)
@@ -469,6 +616,18 @@ class RagService:
         return {
             "answer": answer,
             "sources": sources,
+            "parsed_query": parsed.to_dict(),
+            "structured_facts": structured_facts,
+        }
+
+    def parse_query_debug(self, message: str) -> dict[str, Any]:
+        parsed = self.query_parser.parse(message)
+        facts = self.fact_store.search(parsed, limit=12)
+        return {
+            "parsed_query": parsed.to_dict(),
+            "expanded_query": build_expanded_query(parsed, top_facts=facts),
+            "structured_context": build_structured_context(facts),
+            "facts": facts,
         }
 
     @staticmethod
@@ -489,7 +648,7 @@ class RagService:
         seen: set[str] = set()
 
         def add_source(file_path: str, reference_id: str = "") -> None:
-            filename = Path(file_path).name
+            filename = _human_source_name(file_path)
             dedupe_key = file_path
             if dedupe_key in seen:
                 return
@@ -522,6 +681,70 @@ class RagService:
             else 999,
         )
 
+    async def rebuild_runtime_index_from_store(
+        self,
+        *,
+        batch_size: int = 64,
+        wait: bool = False,
+        poll_interval: float = 10.0,
+        timeout_sec: float = 0.0,
+        items_override: list[tuple[str, str]] | None = None,
+        build_label: str = "full",
+    ) -> dict[str, Any]:
+        """Rebuild LightRAG runtime index from durable knowledge_store chunks.
+
+        This does not re-parse PDF/DOCX/PPTX files. It reuses lightrag_text from
+        data/knowledge_store/chunks.jsonl and re-enqueues it to the current
+        LightRAG working_dir. If wait=True, batches are processed serially and
+        the function returns only after LightRAG has finished each track.
+        """
+        self._require_rag()
+        items = list(items_override) if items_override is not None else list(self.knowledge_store.iter_lightrag_items())
+        if not items:
+            return {"track_ids": [], "chunks": 0, "message": "knowledge_store не содержит chunks для выбранного режима.", "build_label": build_label}
+
+        track_ids: list[str] = []
+        track_statuses: list[dict[str, Any]] = []
+        processed_count = 0
+        failed_count = 0
+        timeout_count = 0
+        bs = max(1, int(batch_size))
+        for start in range(0, len(items), bs):
+            batch = items[start : start + bs]
+            # Always schedule processing after enqueue. When wait=True we wait for
+            # the current track status, not for the whole LightRAG pipeline task.
+            # Waiting on apipeline_process_enqueue_documents() directly can look
+            # like a web/API hang, especially when LightRAG is finalizing graph
+            # storages or processing stale queue entries from previous runs.
+            result = await self.enqueue_documents_batch(batch, schedule_processing=True)
+            track_id = str(result.get("track_id") or "")
+            if not track_id:
+                continue
+            track_ids.append(track_id)
+            if wait:
+                status = await self.wait_for_track(
+                    track_id,
+                    poll_interval=poll_interval,
+                    timeout_sec=timeout_sec,
+                    max_empty_polls=6,
+                )
+                if status.get("timeout"):
+                    timeout_count += 1
+                track_statuses.append(status)
+                processed_count += int(status.get("processed_count") or 0)
+                failed_count += int(status.get("failed_count") or 0)
+        return {
+            "track_ids": track_ids,
+            "track_statuses": track_statuses,
+            "chunks": len(items),
+            "waited": bool(wait),
+            "processed_count": processed_count,
+            "failed_count": failed_count,
+            "timeout_count": timeout_count,
+            "build_label": build_label,
+            "message": f"Поставлено chunks на пересборку runtime-индекса: {len(items)} ({build_label}).",
+        }
+
     async def summarize_chat_title(self, messages: list[dict[str, str]]) -> str:
         self._require_rag()
         normalized = _normalize_history(messages)
@@ -529,7 +752,7 @@ class RagService:
             return "Новый чат"
 
         transcript = "\n".join(
-            f"{'Пользователь' if msg['role'] == 'user' else 'Николя'}: {msg['content'][:400]}"
+            f"{'Пользователь' if msg['role'] == 'user' else '◈NiCo'}: {msg['content'][:400]}"
             for msg in normalized[-8:]
         )
         try:
@@ -602,9 +825,29 @@ class RagService:
             "filename": Path(result.file_path).name if result.file_path else "",
         }
 
+    async def get_knowledge_state(self) -> dict[str, Any]:
+        documents = await self.get_documents()
+        pipeline_busy = await self.is_pipeline_busy()
+        processed_count = sum(1 for doc in documents if doc.get("status") == DocStatus.PROCESSED.value)
+        failed_count = sum(1 for doc in documents if doc.get("status") == DocStatus.FAILED.value)
+        processing_count = sum(
+            1
+            for doc in documents
+            if doc.get("status") in {status.value for status in _INFLIGHT_DOC_STATUSES}
+        )
+        knowledge_ready = processed_count > 0 and processing_count == 0 and not pipeline_busy
+        return {
+            "knowledge_ready": knowledge_ready,
+            "document_count": processed_count,
+            "processing_count": processing_count,
+            "failed_count": failed_count,
+            "pipeline_busy": pipeline_busy,
+            "documents": documents,
+        }
+
     async def get_stats(self) -> dict[str, Any]:
         rag = self._require_rag()
-        pipeline_busy = await self.is_pipeline_busy()
+        state = await self.get_knowledge_state()
         try:
             labels = await asyncio.wait_for(
                 rag.get_graph_labels(),
@@ -612,19 +855,10 @@ class RagService:
             )
         except TimeoutError:
             labels = []
-        documents = await self.get_documents()
-        processed_count = sum(1 for doc in documents if doc.get("status") == DocStatus.PROCESSED.value)
-        processing_count = sum(
-            1
-            for doc in documents
-            if doc.get("status") in {status.value for status in _INFLIGHT_DOC_STATUSES}
-        )
         return {
             "entities": len(labels),
             "labels_preview": labels[:12],
-            "document_count": processed_count,
-            "processing_count": processing_count,
-            "pipeline_busy": pipeline_busy,
-            "documents": documents,
+            **state,
             "working_dir": str(self.working_dir),
+            "knowledge_store": self.knowledge_store.stats(),
         }

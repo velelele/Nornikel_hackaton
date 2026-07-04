@@ -1,0 +1,376 @@
+version: 0.1.0
+language: ru-en
+classes:
+  Material:
+    description: Материалы, вещества, руды, растворы, фазы и продукты.
+  Process:
+    description: Технологические процессы горно-металлургического цикла.
+  Equipment:
+    description: Оборудование, установки, аппараты и технологические узлы.
+  Property:
+    description: Измеряемые свойства, параметры и показатели.
+  Experiment:
+    description: Опыты, испытания, протоколы и экспериментальные серии.
+  Publication:
+    description: Публикации, отчёты, патенты, ГОСТы, стандарты, журнальные статьи.
+  Expert:
+    description: Авторы, исследовательские группы и носители экспертизы.
+  Facility:
+    description: Предприятия, фабрики, установки, лаборатории, месторождения.
+  NumericValue:
+    description: Числовые значения с единицами измерения и ограничениями.
+  SourceFragment:
+    description: "Фрагмент документа: страница, раздел, таблица, chunk."
+relations:
+  uses_material:
+    domain: Process
+    range: Material
+  operates_at_condition:
+    domain: Process
+    range: Property
+  produces_output:
+    domain: Process
+    range: Material
+  described_in:
+    domain: [Process, Material, Equipment, Property, Experiment]
+    range: SourceFragment
+  validated_by:
+    domain: [Claim, Process, Experiment]
+    range: SourceFragment
+  contradicts:
+    domain: Claim
+    range: Claim
+  has_numeric_value:
+    domain: Property
+    range: NumericValue
+  has_unit:
+    domain: NumericValue
+    range: Unit
+  has_geography:
+    domain: [Publication, Experiment, Facility, Process]
+    range: Geography
+  has_time_period:
+    domain: [Publication, Experiment, Process]
+    range: TimePeriod
+terms:
+  electrowinning:
+    canonical_ru: электроэкстракция
+    canonical_en: electrowinning
+    class: Process
+    labels:
+      ru: [электроэкстракция, электроосаждение, электроизвлечение, электролизное извлечение]
+      en: [electrowinning, electroextraction, electrolytic extraction]
+    neighbors: [nickel, catholyte, anolyte, electrolyte, flow_rate, current_density, diaphragm_cell]
+  electrorefining:
+    canonical_ru: электролитическое рафинирование
+    canonical_en: electrorefining
+    class: Process
+    labels:
+      ru: [электролитическое рафинирование, электрорафинирование, рафинирование анодов, рафинирование медных анодов]
+      en: [electrorefining, electrolytic refining, copper anode refining]
+    neighbors: [copper, anode, cathode, catholyte, electrolyte, current_density, temperature]
+  catholyte:
+    canonical_ru: католит
+    canonical_en: catholyte
+    class: Material
+    labels:
+      ru: [католит, катодный раствор, циркуляция католита, поток католита]
+      en: [catholyte, catholyte circulation, catholyte flow, cathode electrolyte]
+    neighbors: [electrowinning, electrorefining, flow_rate, electrolyte, nickel]
+  anolyte:
+    canonical_ru: анолит
+    canonical_en: anolyte
+    class: Material
+    labels:
+      ru: [анолит, анодный раствор]
+      en: [anolyte, anode electrolyte]
+    neighbors: [electrowinning, electrorefining, diaphragm_cell]
+  electrolyte:
+    canonical_ru: электролит
+    canonical_en: electrolyte
+    class: Material
+    labels:
+      ru: [электролит, раствор электролита, сернокислый электролит, хлоридный электролит]
+      en: [electrolyte, sulfate electrolyte, chloride electrolyte]
+    neighbors: [catholyte, anolyte, concentration, ph, temperature]
+  nickel:
+    canonical_ru: никель
+    canonical_en: nickel
+    class: Material
+    labels:
+      ru: [никель, Ni, никелевый, никелевые катоды, никелевая руда]
+      en: [nickel, Ni, nickel cathode, nickel ore]
+    neighbors: [electrowinning, leaching, extraction_recovery, cobalt, catholyte]
+  copper:
+    canonical_ru: медь
+    canonical_en: copper
+    class: Material
+    labels:
+      ru: [медь, Cu, медный, медные аноды, черновая медь, катодная медь]
+      en: [copper, Cu, copper anode, blister copper, cathode copper]
+    neighbors: [electrorefining, matte, slag, precious_metals]
+  cobalt:
+    canonical_ru: кобальт
+    canonical_en: cobalt
+    class: Material
+    labels:
+      ru: [кобальт, Co, кобальтовый]
+      en: [cobalt, Co]
+    neighbors: [nickel, leaching, precipitation, mixed_hydroxide]
+  matte:
+    canonical_ru: штейн
+    canonical_en: matte
+    class: Material
+    labels:
+      ru: [штейн, медный штейн, никелевый штейн, медно-никелевый штейн, файнштейн, белый матт]
+      en: [matte, copper matte, nickel matte, copper-nickel matte, white metal, high-grade matte]
+    neighbors: [slag, smelting, flash_smelting, precious_metals, pgm]
+  slag:
+    canonical_ru: шлак
+    canonical_en: slag
+    class: Material
+    labels:
+      ru: [шлак, отвальный шлак, обеднительный шлак]
+      en: [slag, discard slag, cleaning slag]
+    neighbors: [matte, smelting, precious_metals, distribution]
+  precious_metals:
+    canonical_ru: драгоценные металлы
+    canonical_en: precious metals
+    class: Material
+    labels:
+      ru: [драгоценные металлы, благородные металлы, Au, Ag, золото, серебро]
+      en: [precious metals, noble metals, Au, Ag, gold, silver]
+    neighbors: [matte, slag, distribution, pgm]
+  pgm:
+    canonical_ru: МПГ
+    canonical_en: PGM
+    class: Material
+    labels:
+      ru: [МПГ, металлы платиновой группы, платина, палладий, Pt, Pd, родий, Rh]
+      en: [PGM, platinum group metals, platinum, palladium, Pt, Pd, rhodium, Rh]
+    neighbors: [matte, slag, precious_metals, distribution]
+  desalination:
+    canonical_ru: обессоливание воды
+    canonical_en: water desalination
+    class: Process
+    labels:
+      ru: [обессоливание, обессоливания, обессоливание воды, очистка шахтных вод, очистка сточных вод, деминерализация]
+      en: [desalination, water desalination, mine water treatment, demineralization]
+    neighbors: [sulfate, chloride, calcium, magnesium, sodium, dry_residue, reverse_osmosis, ion_exchange]
+  reverse_osmosis:
+    canonical_ru: обратный осмос
+    canonical_en: reverse osmosis
+    class: Process
+    labels:
+      ru: [обратный осмос, мембранное обессоливание, мембранная очистка]
+      en: [reverse osmosis, RO, membrane desalination, membrane treatment]
+    neighbors: [desalination, sulfate, chloride, dry_residue]
+  ion_exchange:
+    canonical_ru: ионный обмен
+    canonical_en: ion exchange
+    class: Process
+    labels:
+      ru: [ионный обмен, ионообменная очистка, ионообменные смолы]
+      en: [ion exchange, ion-exchange treatment, ion exchange resin]
+    neighbors: [desalination, sulfate, chloride, calcium, magnesium]
+  sulfate:
+    canonical_ru: сульфаты
+    canonical_en: sulfates
+    class: Material
+    labels:
+      ru: [сульфат, сульфаты, SO4, SO₄, сульфат-ионы]
+      en: [sulfate, sulfates, SO4, SO₄]
+    neighbors: [desalination, concentration, dry_residue]
+  chloride:
+    canonical_ru: хлориды
+    canonical_en: chlorides
+    class: Material
+    labels:
+      ru: [хлорид, хлориды, Cl, Cl-, Cl⁻, хлорид-ионы]
+      en: [chloride, chlorides, Cl, Cl-, Cl⁻]
+    neighbors: [desalination, concentration, dry_residue]
+  calcium:
+    canonical_ru: кальций
+    canonical_en: calcium
+    class: Material
+    labels:
+      ru: [кальций, Ca]
+      en: [calcium, Ca]
+    neighbors: [desalination, hardness, concentration]
+  magnesium:
+    canonical_ru: магний
+    canonical_en: magnesium
+    class: Material
+    labels:
+      ru: [магний, Mg]
+      en: [magnesium, Mg]
+    neighbors: [desalination, hardness, concentration]
+  sodium:
+    canonical_ru: натрий
+    canonical_en: sodium
+    class: Material
+    labels:
+      ru: [натрий, Na]
+      en: [sodium, Na]
+    neighbors: [desalination, concentration]
+  leaching:
+    canonical_ru: выщелачивание
+    canonical_en: leaching
+    class: Process
+    labels:
+      ru: [выщелачивание, кучное выщелачивание, автоклавное выщелачивание, кислотное выщелачивание]
+      en: [leaching, heap leaching, pressure leaching, acid leaching]
+    neighbors: [nickel, cobalt, ph, temperature, extraction_recovery]
+  smelting:
+    canonical_ru: плавка
+    canonical_en: smelting
+    class: Process
+    labels:
+      ru: [плавка, окислительная плавка, сульфидная плавка]
+      en: [smelting, oxidative smelting, sulfide smelting]
+    neighbors: [matte, slag, precious_metals, pgm, temperature]
+  flash_smelting:
+    canonical_ru: печь взвешенной плавки
+    canonical_en: flash smelting furnace
+    class: Equipment
+    labels:
+      ru: [ПВП, печь взвешенной плавки, печи взвешенной плавки]
+      en: [flash smelting furnace, FSF]
+    neighbors: [smelting, matte, slag, feed, oxygen]
+  fluidized_bed_furnace:
+    canonical_ru: печь кипящего слоя
+    canonical_en: fluidized bed furnace
+    class: Equipment
+    labels:
+      ru: [печь кипящего слоя, ПВКС, кипящий слой]
+      en: [fluidized bed furnace, fluidized-bed furnace, fluidized bed]
+    neighbors: [smelting, roasting, feed]
+  so2_removal:
+    canonical_ru: удаление SO2
+    canonical_en: SO2 removal
+    class: Process
+    labels:
+      ru: [удаление SO2, удаление SO₂, очистка газов от SO2, сернистый ангидрид, диоксид серы]
+      en: [SO2 removal, sulfur dioxide removal, flue gas desulfurization, FGD]
+    neighbors: [gas_cleaning, reagent, gypsum]
+  gas_cleaning:
+    canonical_ru: газоочистка
+    canonical_en: gas cleaning
+    class: Process
+    labels:
+      ru: [газоочистка, очистка газов, система очистки газов]
+      en: [gas cleaning, off-gas cleaning, gas treatment]
+    neighbors: [so2_removal, equipment]
+  mixed_hydroxide:
+    canonical_ru: смешанные гидроксиды
+    canonical_en: mixed hydroxide precipitate
+    class: Material
+    labels:
+      ru: [смешанные гидроксиды, смешанный гидроксид, МГП, гидроксиды никеля и кобальта]
+      en: [mixed hydroxide precipitate, MHP, mixed hydroxides, nickel-cobalt hydroxide]
+    neighbors: [nickel, cobalt, precipitation, leaching]
+  precipitation:
+    canonical_ru: осаждение
+    canonical_en: precipitation
+    class: Process
+    labels:
+      ru: [осаждение, химическое осаждение, гидроксидное осаждение]
+      en: [precipitation, chemical precipitation, hydroxide precipitation]
+    neighbors: [mixed_hydroxide, ph, nickel, cobalt]
+  diaphragm_cell:
+    canonical_ru: диафрагменная ячейка
+    canonical_en: diaphragm cell
+    class: Equipment
+    labels:
+      ru: [диафрагменная ячейка, диафрагменная ванна, диафрагменные ячейки]
+      en: [diaphragm cell, diaphragm electrolytic cell]
+    neighbors: [electrowinning, catholyte, anolyte]
+  heap_leaching_cold_climate:
+    canonical_ru: кучное выщелачивание в холодном климате
+    canonical_en: heap leaching in cold climate
+    class: Process
+    labels:
+      ru: [кучное выщелачивание в холодном климате, холодный климат, северные условия]
+      en: [heap leaching in cold climate, cold climate heap leaching, arctic heap leaching]
+    neighbors: [leaching, nickel, temperature, extraction_recovery]
+  blasting:
+    canonical_ru: буровзрывные работы
+    canonical_en: blasting operations
+    class: Process
+    labels:
+      ru: [буровзрывные работы, взрывные работы, взрывных работ, проведение взрывных работ, проведении взрывных работ, массовые взрывы, взрывание, БВР, взрыв в карьере, взрывные работы на поверхности, взрывные работы в подземных условиях]
+      en: [blasting, blasting operations, blast works, mass blasting, quarry blasting]
+    neighbors: [seismogram, particle_velocity, frequency_range, dynamic_analysis]
+  seismogram:
+    canonical_ru: сейсмограмма
+    canonical_en: seismogram
+    class: SourceFragment
+    labels:
+      ru: [сейсмограмма, сейсмограммы, сейсмограмм, велосиграмма, велосиграммы, велосиграмм, инструментальная запись колебаний, записи колебаний, сейсмовзрывные волны]
+      en: [seismogram, seismic record, vibration record, blast vibration record]
+    neighbors: [blasting, particle_velocity, frequency_range, dynamic_analysis]
+  particle_velocity:
+    canonical_ru: пиковая скорость смещения
+    canonical_en: peak particle velocity
+    class: Property
+    labels:
+      ru: [пиковая скорость смещения, скорость смещения, скорость колебаний, максимальная скорость колебаний, PVS, PPV, PPVX, PPVY, PPVZ, PVSmax]
+      en: [peak particle velocity, particle velocity, PPV, PVS, vibration velocity]
+    neighbors: [seismogram, blasting, frequency_range]
+  frequency_range:
+    canonical_ru: диапазон частот
+    canonical_en: frequency range
+    class: Property
+    labels:
+      ru: [диапазон частот, частотный диапазон, частоты сейсмовзрывных волн, Гц]
+      en: [frequency range, vibration frequency, seismic wave frequency, Hz]
+    neighbors: [seismogram, blasting, particle_velocity]
+  dynamic_analysis:
+    canonical_ru: прямой динамический расчет
+    canonical_en: direct dynamic analysis
+    class: Process
+    labels:
+      ru: [прямой динамический расчет, динамический расчет, расчет зданий и сооружений, расчетная модель здания, ЛИРА 10]
+      en: [direct dynamic analysis, dynamic calculation, structural dynamic analysis]
+    neighbors: [seismogram, blasting, particle_velocity]
+  high_speed_video:
+    canonical_ru: высокоскоростная видеосъемка
+    canonical_en: high-speed video recording
+    class: Equipment
+    labels:
+      ru: [высокоскоростная видеосъемка, высокоскоростная камера, Phantom MIRO C320, 2000 кадров в секунду, 2000 кадров/с]
+      en: [high-speed video, high-speed camera, Phantom MIRO C320, 2000 fps]
+    neighbors: [blasting]
+properties:
+  concentration:
+    labels: [концентрация, содержание, массовая доля, содержание ионов, concentration, content]
+    units: [mg/L, g/L, percent, ppm, mg/dm3]
+  temperature:
+    labels: [температура, t, temperature]
+    units: [C, K]
+  flow_rate:
+    labels: [скорость потока, скорость циркуляции, расход, flow rate, circulation rate]
+    units: [L/min, m3/h, cm/s, m/s]
+  current_density:
+    labels: [плотность тока, current density]
+    units: [A/m2, A/dm2]
+  ph:
+    labels: [pH, рН, водородный показатель]
+    units: [pH]
+  dry_residue:
+    labels: [сухой остаток, минерализация, TDS, total dissolved solids]
+    units: [mg/L, mg/dm3, g/L]
+  extraction_recovery:
+    labels: [извлечение, выход металла, recovery, extraction]
+    units: [percent]
+  distribution:
+    labels: [распределение, коэффициент распределения, distribution, partitioning]
+    units: [percent, ratio]
+  productivity:
+    labels: [производительность, throughput, capacity]
+    units: [t/day, t/h, m3/h]
+geography:
+  domestic:
+    labels: [россия, российский, отечественный, РФ, СССР, Норильск, Кольский, Заполярный]
+  foreign:
+    labels: [зарубежный, мировая практика, international, world, worldwide, foreign, canada, finland, australia, chile, china]

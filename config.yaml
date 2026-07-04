@@ -1,0 +1,329 @@
+app:
+  symbol: ◈
+  title: NiCo
+server:
+  host: 0.0.0.0
+  port: 8090
+  reload: false
+rag:
+  working_dir: ./data/rag_storage
+  auto_resume: false
+  extraction_prompt_hardening: true
+  extraction_output_repair: true
+models:
+  llm:
+    base_url: http://localhost:11434/v1
+    model: qwen3:4b
+    api_key: ollama
+  embedding:
+    base_url: http://localhost:11434/v1
+    model: bge-m3
+    dim: 1024
+    api_key: ollama
+retrieval:
+  query_mode: hybrid
+upload:
+  store_dir: ./uploads
+storage:
+  knowledge_store_dir: ./data/knowledge_store
+  runtime_rag_dir: ./data/rag_storage
+  vector_cache_dir: ./data/vector_cache
+  snapshots_dir: ./data/snapshots
+  global_router_dir: ./data/knowledge_store/global
+versioning:
+  schema_version: '0.5'
+  ontology_version: nornickel-metallurgy-0.1
+  app_version: nico-1.0.0
+ingestion:
+  mode: topic_sharded
+  topic_layout:
+    enabled: true
+    path_depth:
+      collection_level: 1
+      theme_level: 2
+    default_collection: misc
+    default_theme: unclassified
+  file_discovery:
+    recursive: true
+    include_root_files: true
+    supported_extensions:
+    - .pdf
+    - .doc
+    - .docx
+    - .ppt
+    - .pptx
+    - .xls
+    - .xlsx
+    - .csv
+    - .txt
+    - .md
+    - .html
+    - .htm
+    - .epub
+    ignore_dirs:
+    - __MACOSX
+    - .git
+    - node_modules
+    - .venv
+    - venv
+    - data
+    - uploads
+    - __pycache__
+    year_dir_pattern: ^(19|20)\d{2}$
+  theme_resolution:
+    strategy: hybrid
+    use_path: true
+    use_filename: true
+    use_content_preview: true
+    content_preview_chars: 5000
+    min_confidence: 0.72
+    known_collections:
+      журналы:
+        aliases:
+        - журналы
+        - журнал
+        - journals
+        - journal
+        - articles
+        - статьи
+        - papers
+      конференции:
+        aliases:
+        - конференции
+        - конференция
+        - conferences
+        - conference
+        - proceedings
+        - ALTA
+      патенты:
+        aliases:
+        - патенты
+        - патент
+        - patents
+        - patent
+      отчёты:
+        aliases:
+        - отчеты
+        - отчёты
+        - reports
+        - report
+        - protocols
+        - протоколы
+      стандарты:
+        aliases:
+        - ГОСТ
+        - gost
+        - standards
+        - стандарты
+        - нормативы
+      презентации:
+        aliases:
+        - презентации
+        - презентация
+        - presentations
+        - presentation
+        - slides
+    auto_theme_from_filename: false
+    auto_theme_from_content_terms: false
+    collapse_low_confidence: true
+  theme_overrides:
+  - pattern: .*ALTA.*Ni.*Co.*
+    collection: конференции
+    theme_name: ALTA_Ni_Co
+    source_type: conference_paper
+  - pattern: .*(SO2|SO₂|сернист|sulfur\s*dioxide|газоочист).*
+    collection: экология
+    theme_name: SO2_removal
+    source_type: report_or_article
+  - pattern: .*Горн(ая|ой).*промышленн.*
+    collection: журналы
+    theme_name: Горная промышленность
+    source_type: journal_article
+  - pattern: .*(Цветные\s*металлы|ЦМ).*
+    collection: журналы
+    theme_name: Цветные металлы
+    source_type: journal_article
+  - pattern: .*(Смеш.*гидроксид|mixed\s*hydroxide|MHP).*
+    collection: гидрометаллургия
+    theme_name: mixed_hydroxides
+    source_type: report_or_article
+  batching:
+    batch_size_docs: 8
+    max_parallel_themes: 2
+    max_parallel_docs_per_theme: 1
+    stop_on_theme_error: false
+  routing:
+    top_k_themes: 5
+    min_theme_score: 0.15
+    fallback_to_global_chunks: true
+    use_theme_embeddings: false
+    explain: true
+  profiles:
+    safe:
+      batch_size_docs: 4
+      build_full_lightrag_kg: true
+      build_global_router: true
+      build_runtime_index: true
+      compute_graph_metrics_during_ingest: true
+      rebuild_graph_metrics_after: true
+      rebuild_theme_embeddings_after: true
+      build_global_router_after: true
+    balanced:
+      batch_size_docs: 8
+      build_full_lightrag_kg: true
+      build_global_router: true
+      build_runtime_index: true
+      compute_graph_metrics_during_ingest: true
+      rebuild_graph_metrics_after: true
+      rebuild_theme_embeddings_after: true
+      build_global_router_after: true
+    fast_smoke:
+      batch_size_docs: 16
+      build_full_lightrag_kg: false
+      build_global_router: true
+      build_runtime_index: true
+      compute_graph_metrics_during_ingest: false
+      rebuild_graph_metrics_after: true
+      rebuild_theme_embeddings_after: true
+      build_global_router_after: true
+    parse_only:
+      batch_size_docs: 32
+      embed_chunks: false
+      build_full_lightrag_kg: false
+      build_global_router: false
+      build_runtime_index: false
+      compute_graph_metrics_during_ingest: false
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: false
+      build_global_router_after: false
+      status: parsed_ready
+    fast_fill:
+      description: 'Stage 1: parse/chunk/extract facts into durable knowledge_store
+        only; skip LightRAG runtime and heavy postprocessing.'
+      build_runtime_index: false
+      compute_graph_metrics_during_ingest: false
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: false
+      build_global_router_after: true
+      batch_size_docs: 32
+      status: search_ready
+      search_backend: knowledge_store_lightweight
+    overnight_compressed_graph:
+      description: 'Overnight compressed_graph: deterministic fallback + compressed
+        LightRAG runtime.'
+      graph_mode: compressed_graph
+      build_runtime_index: true
+      clear_runtime: true
+      wait: true
+      batch_size_docs: 4
+      max_parallel_themes: 2
+      poll_interval: 5.0
+      timeout_sec: 600.0
+      max_chunks_per_document_for_graph: 5
+      min_kg_score: 0.08
+      max_chunks_per_theme: 48
+      max_candidate_chunks_per_theme: 800
+      compressed_dynamic_document_limits: true
+      compressed_short_document_max_chunks: 3
+      compressed_long_document_max_chunks: 6
+      compressed_runtime_doc_mode: chunk
+      compressed_doc_type_aware: true
+      compressed_min_chunk_quality: 0.2
+      fallback_to_lightweight_on_timeout: true
+      deterministic_timeout_sec: 300.0
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: false
+      build_global_router_after: true
+      target_status: compressed_kg_ready
+
+    overnight_compressed_answerable:
+      description: 'Safe compressed LightRAG answerability profile: chunk-vector RAG, extraction repair disabled, conservative selection.'
+      graph_mode: compressed_graph
+      build_runtime_index: true
+      clear_runtime: true
+      wait: true
+      batch_size_docs: 4
+      poll_interval: 10.0
+      timeout_sec: 1800.0
+      max_chunks_per_document_for_graph: 4
+      min_kg_score: 0.15
+      max_chunks_per_theme: 32
+      max_candidate_chunks_per_theme: 800
+      compressed_dynamic_document_limits: true
+      compressed_short_document_max_chunks: 3
+      compressed_long_document_max_chunks: 6
+      compressed_runtime_doc_mode: chunk
+      compressed_doc_type_aware: true
+      compressed_min_chunk_quality: 0.16
+      lightrag_extraction_prompt_hardening: false
+      lightrag_extraction_output_repair: false
+      fallback_to_lightweight_on_timeout: true
+      deterministic_timeout_sec: 900.0
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: true
+      build_global_router_after: true
+      target_status: compressed_kg_ready
+    overnight_retrieval_kg:
+      description: 'Stage 2 default: build retrieval KG over knowledge_store: chunk
+        index + numeric/entity/triple boosts + metadata-aware search, no LightRAG
+        runtime.'
+      graph_mode: retrieval_kg
+      build_runtime_index: false
+      clear_runtime: false
+      wait: false
+      batch_size_docs: 32
+      poll_interval: 10.0
+      timeout_sec: 0.0
+      max_chunks_per_document_for_graph: 0
+      min_kg_score: 0.0
+      max_chunks_per_theme: 0
+      fallback_to_lightweight_on_timeout: true
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: false
+      build_global_router_after: true
+      target_status: retrieval_kg_ready
+    overnight_compressed_lightrag:
+      description: 'Stage 2 optional: build compact LightRAG runtime from selected
+        graph chunks with explicit timeout control.'
+      graph_mode: compressed_kg
+      build_runtime_index: true
+      clear_runtime: true
+      wait: true
+      batch_size_docs: 2
+      poll_interval: 5.0
+      timeout_sec: 600.0
+      max_chunks_per_document_for_graph: 4
+      min_kg_score: 0.15
+      max_chunks_per_theme: 32
+      compressed_runtime_doc_mode: chunk
+      compressed_doc_type_aware: true
+      compressed_min_chunk_quality: 0.2
+      fallback_to_lightweight_on_timeout: true
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: false
+      build_global_router_after: true
+      target_status: compressed_kg_ready
+    overnight_full:
+      description: 'Stage 2 optional: build full LightRAG runtime from all selected-theme
+        chunks with explicit timeout control.'
+      graph_mode: full_kg
+      build_runtime_index: true
+      clear_runtime: false
+      wait: true
+      batch_size_docs: 2
+      poll_interval: 5.0
+      timeout_sec: 900.0
+      fallback_to_lightweight_on_timeout: true
+      rebuild_graph_metrics_after: false
+      rebuild_theme_embeddings_after: false
+      build_global_router_after: true
+      target_status: full_kg_ready
+intelligence:
+  graph_metrics:
+    enabled: true
+    top_n: 20
+    pagerank_iterations: 25
+    betweenness_sample: 32
+  theme_embeddings:
+    enabled: false
+    max_chunks_per_theme: 12

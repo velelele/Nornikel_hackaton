@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <title>NiCo AI — робот-помощник</title>
+  <title>NiCo</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -24,15 +24,9 @@
     <header class="header glass">
       <div class="header-start">
         <div class="brand">
-          <div class="brand-mark glass-shine" aria-hidden="true">
-            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 38C8 24 14 12 24 8C34 12 40 24 40 38" stroke="#0084C7" stroke-width="6" stroke-linecap="round"/>
-              <path d="M8 10C18 18 30 18 40 10" stroke="#005A9C" stroke-width="6" stroke-linecap="round"/>
-              <path d="M14 38L34 10" stroke="#005A9C" stroke-width="4" stroke-linecap="round"/>
-            </svg>
-          </div>
+          <div class="brand-mark glass-shine" aria-hidden="true"><span class="brand-diamond">◈</span></div>
           <div class="brand-text">
-            <h1 class="brand-title">NiCo AI</h1>
+            <h1 class="brand-title"><span class="brand-word">NiCo</span></h1>
           </div>
         </div>
         <button
@@ -47,21 +41,34 @@
         </button>
       </div>
 
-      <div class="header-actions">
-        <button id="uploadBtn" class="btn btn-primary" type="button" aria-busy="false">
-          <span class="btn-spinner" aria-hidden="true" hidden></span>
-          <span class="btn-text-full">Загрузить документы</span>
-          <span class="btn-text-short">Загрузить</span>
-        </button>
-        <input
-          id="fileInput"
-          type="file"
-          hidden
-          accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.rtf,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.epub"
-          multiple
-        />
+      <div class="header-actions header-status-only">
         <span id="statusBadge" class="badge glass-badge" role="status">Подключение...</span>
       </div>
+      <input
+        id="fileInput"
+        type="file"
+        hidden
+        accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.rtf,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.epub"
+        multiple
+      />
+      <input
+        id="folderInput"
+        type="file"
+        hidden
+        accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.rtf,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.epub"
+        webkitdirectory
+        directory
+        multiple
+      />
+      <input
+        id="fastStageFolderInput"
+        type="file"
+        hidden
+        accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.rtf,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.epub"
+        webkitdirectory
+        directory
+        multiple
+      />
     </header>
 
     <main class="layout">
@@ -73,6 +80,86 @@
           </div>
           <ul id="chatSessionList" class="chat-session-list" role="list"></ul>
         </section>
+        <section class="panel glass panel-ingestion">
+          <div class="panel-head compact-head">
+            <h2>Индексирование</h2>
+          </div>
+
+          <div class="index-mode-switch" role="tablist" aria-label="Режим индексирования">
+            <button id="fastIndexTab" class="mode-tab active" type="button" role="tab" aria-selected="true" aria-controls="fastIndexPanel">
+              Быстрый запуск
+            </button>
+            <button id="exactIndexTab" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="exactIndexPanel">
+              Полная сборка
+            </button>
+          </div>
+
+          <div id="fastIndexPanel" class="ingestion-controls mode-panel active" role="tabpanel" aria-labelledby="fastIndexTab">
+            <p class="mode-description">
+              Двухстадийная сборка для большого корпуса. Сначала быстро сохраняем документы в knowledge_store и включаем поиск, затем отдельно достраиваем граф.
+            </p>
+            <div class="stage-actions">
+              <button id="fastFolderStage1Btn" class="btn btn-primary btn-sm" type="button">
+                1. Выбрать папку и включить поиск
+              </button>
+              <button id="stage2StartBtn" class="btn btn-ghost btn-sm" type="button">
+                2. Построение графа знаний
+              </button>
+            </div>
+            <p class="mode-hint">
+              Stage 1 обрабатывает все выбранные файлы и подпапки. Stage 2 по умолчанию строит поисковый граф знаний поверх knowledge_store без LightRAG. LightRAG-граф можно запустить отдельно по выбранной теме, коллекции или всему корпусу.
+            </p>
+
+            <div class="stage2-settings">
+              <div class="stage2-title">Построение графа знаний</div>
+              <div class="stage2-field">
+                <label class="field-label" for="stage2ModeSelect">Тип графа</label>
+                <select id="stage2ModeSelect" class="text-input">
+                  <option value="retrieval_kg" selected>Поисковый граф знаний без LightRAG</option>
+                  <option value="compressed_lightrag">Сокращённый LightRAG-граф</option>
+                  <option value="full_kg">Полный LightRAG-граф</option>
+                </select>
+              </div>
+              <div class="stage2-field">
+                <label class="field-label" for="stage2ChunksInput">Chunks/doc</label>
+                <input id="stage2ChunksInput" class="text-input short" type="number" min="1" max="64" value="6" placeholder="6" />
+              </div>
+              <div class="stage2-field">
+                <label class="field-label" for="stage2ThemeIdsInput">Тема или коллекция, необязательно</label>
+                <input id="stage2ThemeIdsInput" class="text-input" type="text" list="themeHints" placeholder="конференции, ALTA, конференции__ALTA_Ni_Co" />
+                <datalist id="themeHints"></datalist>
+              </div>
+            </div>
+          </div>
+
+          <div id="exactIndexPanel" class="ingestion-controls mode-panel" role="tabpanel" aria-labelledby="exactIndexTab" hidden>
+            <p class="mode-description">
+              Прежняя логика: документы сразу отправляются в тематический LightRAG runtime. Используйте для малого корпуса или точечной проверки.
+            </p>
+            <div class="stage-actions">
+              <button id="exactFilesBtn" class="btn btn-primary btn-sm" type="button">Выбрать файлы</button>
+              <button id="exactFolderBtn" class="btn btn-ghost btn-sm" type="button">Выбрать папку</button>
+            </div>
+            <p class="mode-hint">
+              Для больших коллекций используйте «Быстрый запуск», иначе построение LightRAG runtime может быть долгим.
+            </p>
+          </div>
+
+          <div id="operationPanel" class="operation-panel" aria-live="polite">
+            <div class="operation-head">
+              <span id="operationTitle" class="operation-title">Операция не запущена</span>
+              <span id="operationPercent" class="operation-percent">—</span>
+            </div>
+            <div id="operationProgressBar" class="operation-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span id="operationProgressFill" class="operation-progress-fill"></span>
+            </div>
+            <p id="operationProgressText" class="operation-progress-text">Выберите режим индексирования.</p>
+            <p id="operationCurrent" class="operation-current"></p>
+          </div>
+
+          <p id="ingestionStatus" class="ingestion-status">Быстрый запуск: выберите папку, чтобы построить search-ready базу без ввода пути вручную.</p>
+        </section>
+
         <section class="panel glass panel-knowledge">
           <h2>База знаний</h2>
           <div class="knowledge-body">
@@ -82,7 +169,7 @@
                 <strong id="documentCount">—</strong>
               </div>
               <div class="stat-card glass-inset">
-                <span class="stat-label">Сущностей в графе</span>
+                <span class="stat-label" title="Сущностей в графе">Сущности</span>
                 <strong id="entityCount">—</strong>
               </div>
             </div>

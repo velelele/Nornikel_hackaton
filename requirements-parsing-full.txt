@@ -1,0 +1,9 @@
+# Optional heavier parsers for difficult PDFs, reports and mixed Office documents.
+# Install only after the baseline starts successfully:
+#   pip install -r requirements-parsing-full.txt
+
+-r requirements.txt
+docling>=2.0.0,<3.0.0
+pymupdf>=1.24.0,<2.0.0
+beautifulsoup4>=4.12.0,<5.0.0
+lxml>=5.0.0,<7.0.0
